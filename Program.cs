@@ -30,12 +30,6 @@ builder.WebHost.UseKestrel(o => o.AddServerHeader = false);
 
 var app = builder.Build();
 
-var jsonOptions = new JsonSerializerOptions
-{
-    PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-    Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping
-};
-
 var db = app.Services.GetRequiredService<Database>();
 db.Init();
 
@@ -117,7 +111,8 @@ AppConfig BuildConfig(string title, string homeUrl, string fallbackUrl, string m
 
 (string Json, string Signature) SerializeAndSign(AppConfig config)
 {
-    var json = JsonSerializer.Serialize(config, jsonOptions);
+    // 使用 source generator 序列化，确保 PublishTrimmed 裁剪后元数据不丢失
+    var json = JsonSerializer.Serialize(config, AppJsonContext.Default.AppConfig);
     var signature = Signer.Sign(db.GetSetting("rsa_private")!, Encoding.UTF8.GetBytes(json));
     return (json, signature);
 }
@@ -247,7 +242,7 @@ app.MapPost("/api/admin/config/rollback", (HttpContext ctx, string version) =>
     if (target is null) return Results.NotFound(new { error = "版本不存在" });
 
     var newVersion = NextVersion();
-    var config = JsonSerializer.Deserialize<AppConfig>(target.ConfigJson, jsonOptions)!;
+    var config = JsonSerializer.Deserialize(target.ConfigJson, AppJsonContext.Default.AppConfig)!;
     config.Version = newVersion;
     config.GeneratedAt = DateTimeOffset.Now.ToString("yyyy-MM-dd'T'HH:mm:sszzz");
     var (json, signature) = SerializeAndSign(config);
@@ -304,7 +299,8 @@ app.MapGet("/api/v1/config", async (HttpContext ctx) =>
     if (row is null)
     {
         ctx.Response.StatusCode = 404;
-        await ctx.Response.WriteAsJsonAsync(new { error = "尚未发布配置" }, jsonOptions);
+        ctx.Response.ContentType = "application/json; charset=utf-8";
+        await ctx.Response.WriteAsync("{\"error\":\"尚未发布配置\"}");
         return;
     }
     var deviceId = ctx.Request.Query["device_id"].FirstOrDefault();

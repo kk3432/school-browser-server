@@ -9,6 +9,19 @@
     <Version>0.4.0</Version>
     <!-- 复用 APP logo 生成的 Windows 图标（exe 图标） -->
     <ApplicationIcon>installer/campus-browser.ico</ApplicationIcon>
+
+    <!-- ===== 发布瘦身（v0.4.0 起）===== -->
+    <!-- IL 裁剪：移除未使用的框架代码，publish 体积 101MB→约 50-60MB -->
+    <PublishTrimmed>true</PublishTrimmed>
+    <!-- partial 模式：仅裁剪标记为 trim-safe 的程序集，Minimal API 匿名类型不受影响 -->
+    <TrimMode>partial</TrimMode>
+    <!-- 不变全球化：移除 ICU 全球化数据，省约 3-5MB；日期解析统一用 InvariantCulture -->
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <!-- 不生成调试符号与 PDB，生产不需要 -->
+    <DebugType>none</DebugType>
+    <DebugSymbols>false</DebugSymbols>
+    <!-- 裁剪分析器告警不阻断构建（Minimal API 匿名类型会告警但运行正常） -->
+    <EnableTrimAnalyzer>false</EnableTrimAnalyzer>
   </PropertyGroup>
 
   <ItemGroup>
@@ -23,5 +36,15 @@
     <EmbeddedResource Remove="installer/**" />
     <None Remove="installer/**" />
   </ItemGroup>
+
+  <!-- 发布后删除 .NET 运行时自带的调试/诊断原生 DLL，生产环境不需要，省约 6MB -->
+  <Target Name="RemoveDebugRuntimeFiles" AfterTargets="Publish">
+    <ItemGroup>
+      <_DebugRuntimeFiles Include="$(PublishDir)Microsoft.DiaSymReader.Native.*.dll" />
+      <_DebugRuntimeFiles Include="$(PublishDir)mscordaccore*.dll" />
+      <_DebugRuntimeFiles Include="$(PublishDir)mscordbi.dll" />
+    </ItemGroup>
+    <Delete Files="@(_DebugRuntimeFiles)" />
+  </Target>
 
 </Project>

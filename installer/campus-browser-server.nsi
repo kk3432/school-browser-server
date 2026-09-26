@@ -37,6 +37,9 @@ ShowInstDetails show
 ShowUnInstDetails show
 RequestExecutionLevel admin
 
+; LZMA 固实压缩：比默认 zlib 压缩率高约 10-15%，安装包更小
+SetCompressor /SOLID lzma
+
 InstallDir    "$PROGRAMFILES64\CampusBrowserServer"
 InstallDirRegKey HKLM "${REG_MAIN}" "InstallLocation"   ; 升级时默认回到上次安装目录
 
