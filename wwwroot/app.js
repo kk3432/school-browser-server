@@ -111,6 +111,7 @@ async function submitSetup() {
     updateIntervalSeconds: parseInt($('setup-interval').value, 10) || 300,
     hiddenEntryEnabled: $('setup-hidden-entry').checked,
     blockScreenshot: $('setup-block-screenshot').checked,
+    requireStartupPhoto: $('setup-require-photo').checked,
     allowedApps: collectApps('setup-apps'),
     adminPin: $('setup-pin').value.trim()
   };
@@ -188,6 +189,7 @@ function fillForm(c) {
   $('f-kiosk').checked = !!c.kiosk;
   $('f-hidden-entry').checked = c.hidden_entry_enabled !== false;
   $('f-block-screenshot').checked = c.block_screenshot !== false;
+  $('f-require-photo').checked = !!c.require_startup_photo;
   $('f-rules').value = (c.rules || []).join('\n');
   fillBookmarks('f-bookmarks', c.bookmarks);
   fillApps('f-apps', c.allowed_apps);
@@ -208,6 +210,7 @@ async function publish() {
     kiosk: $('f-kiosk').checked,
     hiddenEntryEnabled: $('f-hidden-entry').checked,
     blockScreenshot: $('f-block-screenshot').checked,
+    requireStartupPhoto: $('f-require-photo').checked,
     allowedApps: collectApps('f-apps'),
     adminPin: $('f-pin').value.trim(),
     note: $('f-note').value
@@ -255,18 +258,44 @@ function renderDevices(list) {
   const tbody = $('tbl-devices').querySelector('tbody');
   tbody.innerHTML = list.length
     ? ''
-    : '<tr><td colspan="8" class="muted">暂无设备注册</td></tr>';
+    : '<tr><td colspan="10" class="muted">暂无设备注册</td></tr>';
   list.forEach(d => {
     const tr = document.createElement('tr');
     const status = d.online
       ? '<span style="color:#2E9E5B;font-weight:700;">●</span> 在线'
       : '<span style="color:#9AA9BA;">●</span> 离线';
+    const photoCell = d.photoSkipReason
+      ? '<span class="muted" title="' + escAttr(d.photoSkipReason) + '">跳过（' + escHtml(d.photoSkipReason) + '）</span>'
+      : d.lastPhotoAt
+        ? escHtml(d.lastPhotoAt)
+        : '<span class="muted">—</span>';
+    const viewBtn = d.lastPhotoAt
+      ? `<button class="mini" data-dev="${escAttr(d.deviceId)}">查看</button>`
+      : '<span class="muted">—</span>';
     tr.innerHTML = `<td>${status}</td><td><code>${escHtml(d.deviceId)}</code></td><td>${escHtml(d.name || '')}</td>
       <td>${escHtml(d.appVersion || '')}</td><td>${escHtml(d.configVersion || '')}</td>
       <td>${d.ipAddress ? '<code>' + escHtml(d.ipAddress) + '</code>' : '<span class="muted">—</span>'}</td>
-      <td>${escHtml(d.registeredAt)}</td><td>${escHtml(d.lastSeen)}</td>`;
+      <td>${escHtml(d.registeredAt)}</td><td>${escHtml(d.lastSeen)}</td>
+      <td>${photoCell}</td><td>${viewBtn}</td>`;
+    tr.querySelector('button')?.addEventListener('click', () => viewPhoto(d.deviceId));
     tbody.appendChild(tr);
   });
+}
+
+/** 带鉴权拉取设备最新照片并在新窗口打开。 */
+async function viewPhoto(deviceId) {
+  try {
+    const resp = await fetch(`/api/admin/photo?deviceId=${encodeURIComponent(deviceId)}&file=latest`, {
+      headers: { 'Authorization': 'Bearer ' + state.token }
+    });
+    if (!resp.ok) throw new Error(`照片加载失败（${resp.status}）`);
+    const blob = await resp.blob();
+    const url = URL.createObjectURL(blob);
+    window.open(url, '_blank');
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+  } catch (e) {
+    alert(e.message);
+  }
 }
 
 // ---------- 启动 ----------

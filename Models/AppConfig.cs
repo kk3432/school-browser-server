@@ -54,6 +54,10 @@ public class AppConfig
     [JsonPropertyName("block_screenshot")]
     public bool BlockScreenshot { get; set; } = true;
 
+    /// <summary>是否要求平板每次启动时用前置摄像头拍照并上传（v0.5.0 新增）；开启后未授权相机权限无法进入浏览器。</summary>
+    [JsonPropertyName("require_startup_photo")]
+    public bool RequireStartupPhoto { get; set; }
+
     /// <summary>允许从浏览器唤醒的其他应用白名单（WebView scheme 链接与工具栏应用按钮）。</summary>
     [JsonPropertyName("allowed_apps")]
     public List<AllowedAppItem> AllowedApps { get; set; } = new();
@@ -93,6 +97,7 @@ public class SetupRequest
     public bool Kiosk { get; set; }
     public bool HiddenEntryEnabled { get; set; } = true;
     public bool BlockScreenshot { get; set; } = true;
+    public bool RequireStartupPhoto { get; set; }
     public List<AllowedAppItem> AllowedApps { get; set; } = new();
     public string AdminPin { get; set; } = "";
 }
@@ -110,6 +115,7 @@ public class PublishRequest
     public bool Kiosk { get; set; }
     public bool HiddenEntryEnabled { get; set; } = true;
     public bool BlockScreenshot { get; set; } = true;
+    public bool RequireStartupPhoto { get; set; }
     public List<AllowedAppItem> AllowedApps { get; set; } = new();
     /// <summary>6 位管理密码；留空表示沿用原密码。</summary>
     public string AdminPin { get; set; } = "";
@@ -134,7 +140,7 @@ public class DeviceRequest
 
 public record VersionRow(string Version, string ConfigJson, string Signature, string PublishedAt, string? Note);
 
-public record DeviceRow(string DeviceId, string Name, string AppVersion, string ConfigVersion, string IpAddress, string RegisteredAt, string LastSeen);
+public record DeviceRow(string DeviceId, string Name, string AppVersion, string ConfigVersion, string IpAddress, string RegisteredAt, string LastSeen, string? LastPhotoAt, string? PhotoSkipReason);
 
 /// <summary>教师快捷书签名目。</summary>
 public class BookmarkItem

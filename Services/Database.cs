@@ -64,8 +64,10 @@ public class Database
             """;
         cmd.ExecuteNonQuery();
 
-        // 旧库迁移：devices 表补 ip_address 列（CREATE TABLE IF NOT EXISTS 不会改已有表）
+        // 旧库迁移：devices 表补列（CREATE TABLE IF NOT EXISTS 不会改已有表）
         EnsureColumn(conn, "devices", "ip_address", "TEXT");
+        EnsureColumn(conn, "devices", "last_photo_at", "TEXT");
+        EnsureColumn(conn, "devices", "photo_skip_reason", "TEXT");
     }
 
     /// <summary>列不存在时 ALTER TABLE 补列，保护已部署的旧数据库。</summary>
@@ -247,22 +249,60 @@ public class Database
         using var conn = Open();
         using var cmd = conn.CreateCommand();
         cmd.CommandText = """
-            SELECT device_id, name, app_version, config_version, ip_address, registered_at, last_seen
+            SELECT device_id, name, app_version, config_version, ip_address, registered_at, last_seen,
+                   last_photo_at, photo_skip_reason
             FROM devices ORDER BY last_seen DESC;
             """;
         using var reader = cmd.ExecuteReader();
-        while (reader.Read())
-        {
-            result.Add(new DeviceRow(
-                reader.GetString(0),
-                reader.IsDBNull(1) ? "" : reader.GetString(1),
-                reader.IsDBNull(2) ? "" : reader.GetString(2),
-                reader.IsDBNull(3) ? "" : reader.GetString(3),
-                reader.IsDBNull(4) ? "" : reader.GetString(4),
-                reader.GetString(5),
-                reader.GetString(6)));
-        }
+        while (reader.Read()) result.Add(ReadDevice(reader));
         return result;
+    }
+
+    public DeviceRow? GetDevice(string deviceId)
+    {
+        using var conn = Open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = """
+            SELECT device_id, name, app_version, config_version, ip_address, registered_at, last_seen,
+                   last_photo_at, photo_skip_reason
+            FROM devices WHERE device_id=$id;
+            """;
+        cmd.Parameters.AddWithValue("$id", deviceId);
+        using var reader = cmd.ExecuteReader();
+        return reader.Read() ? ReadDevice(reader) : null;
+    }
+
+    private static DeviceRow ReadDevice(SqliteDataReader reader) => new(
+        reader.GetString(0),
+        reader.IsDBNull(1) ? "" : reader.GetString(1),
+        reader.IsDBNull(2) ? "" : reader.GetString(2),
+        reader.IsDBNull(3) ? "" : reader.GetString(3),
+        reader.IsDBNull(4) ? "" : reader.GetString(4),
+        reader.GetString(5),
+        reader.GetString(6),
+        reader.IsDBNull(7) ? null : reader.GetString(7),
+        reader.IsDBNull(8) ? null : reader.GetString(8));
+
+    /// <summary>照片接收成功后记录时间并清除跳过原因（限频与后台展示依据）。</summary>
+    public void SetPhotoTaken(string deviceId, string at)
+    {
+        using var conn = Open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = "UPDATE devices SET last_photo_at=$at, photo_skip_reason=NULL WHERE device_id=$id;";
+        cmd.Parameters.AddWithValue("$at", at);
+        cmd.Parameters.AddWithValue("$id", deviceId);
+        cmd.ExecuteNonQuery();
+    }
+
+    /// <summary>设备上报跳过拍照的原因（如无前置摄像头），不更新 last_photo_at。</summary>
+    public void SetPhotoSkip(string deviceId, string reason)
+    {
+        using var conn = Open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = "UPDATE devices SET photo_skip_reason=$r WHERE device_id=$id;";
+        cmd.Parameters.AddWithValue("$r", reason);
+        cmd.Parameters.AddWithValue("$id", deviceId);
+        cmd.ExecuteNonQuery();
     }
 
     private static string Now() => DateTimeOffset.Now.ToString("yyyy-MM-dd HH:mm:ss zzz");

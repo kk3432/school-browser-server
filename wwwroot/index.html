@@ -43,6 +43,7 @@
       </div>
       <label class="chk"><input id="setup-hidden-entry" type="checkbox" checked> 允许平板打开隐藏管理入口（Logo 连点 5 次；关闭后仅能由服务器重新开启）</label>
       <label class="chk"><input id="setup-block-screenshot" type="checkbox" checked> 禁止截屏与录屏（FLAG_SECURE，开启后平板全局强制）</label>
+      <label class="chk"><input id="setup-require-photo" type="checkbox"> 要求平板启动时拍前置照片并上传（未授权相机权限将无法进入浏览器）</label>
       <div class="full">
         <label>允许唤醒的应用白名单（APP 工具栏「应用」按钮；网页内自定义 scheme 链接也按此表拉起）</label>
         <div id="setup-apps" class="app-editor"></div>
@@ -94,6 +95,7 @@
         </div>
         <label class="chk"><input id="f-hidden-entry" type="checkbox" checked> 允许平板打开隐藏管理入口</label>
         <label class="chk"><input id="f-block-screenshot" type="checkbox" checked> 禁止截屏与录屏</label>
+        <label class="chk"><input id="f-require-photo" type="checkbox"> 要求平板启动时拍前置照片并上传（未授权相机无法进入浏览器）</label>
         <div class="full">
           <label>允许唤醒的应用白名单（包名 / 显示名 / 触发 scheme）</label>
           <div id="f-apps" class="app-editor"></div>
@@ -117,7 +119,7 @@
     <div class="card">
       <h3>在线设备</h3>
       <table id="tbl-devices">
-        <thead><tr><th>状态</th><th>设备 ID</th><th>名称</th><th>APP 版本</th><th>配置版本</th><th>当前 IP</th><th>注册时间</th><th>最后在线</th></tr></thead>
+        <thead><tr><th>状态</th><th>设备 ID</th><th>名称</th><th>APP 版本</th><th>配置版本</th><th>当前 IP</th><th>注册时间</th><th>最后在线</th><th>最近拍照</th><th>照片</th></tr></thead>
         <tbody></tbody>
       </table>
     </div>

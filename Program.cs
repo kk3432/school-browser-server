@@ -1,8 +1,15 @@
 using System.Text;
 using System.Globalization;
 using System.Text.Json;
+using System.Text.Json.Serialization.Metadata;
+using System.Text.RegularExpressions;
 using CampusBrowser.Server.Models;
 using CampusBrowser.Server.Services;
+
+// 启动拍照上传限制（v0.5.0）
+const int MaxPhotoBytes = 2 * 1024 * 1024;      // 单张照片上限 2MB
+const int PhotoRateSeconds = 300;               // 每设备 5 分钟内仅收 1 张（防刷）
+const int PhotoRetentionDays = 7;               // 照片保留天数，上传时惰性清理（按天清理策略）
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -27,6 +34,14 @@ if (string.IsNullOrWhiteSpace(configuredUrls))
 builder.WebHost.UseUrls(configuredUrls ?? "http://0.0.0.0:8080");
 // 安全：不向响应暴露 Server 头，减少服务端指纹信息
 builder.WebHost.UseKestrel(o => o.AddServerHeader = false);
+
+// 裁剪安全：Minimal API 请求体绑定/响应序列化接入 source generator（AppJsonContext），
+// 未注册类型（如 Results.Ok(new{...}) 匿名对象）由反射 resolver 兜底。
+builder.Services.ConfigureHttpJsonOptions(options =>
+{
+    options.SerializerOptions.TypeInfoResolver =
+        JsonTypeInfoResolver.Combine(AppJsonContext.Default, new DefaultJsonTypeInfoResolver());
+});
 
 var app = builder.Build();
 
@@ -91,7 +106,8 @@ List<AllowedAppItem> NormalizeAllowedApps(List<AllowedAppItem>? apps) =>
 
 AppConfig BuildConfig(string title, string homeUrl, string fallbackUrl, string mode, string rules,
     List<BookmarkItem>? bookmarks, int interval, bool kiosk, string? pinHash,
-    bool hiddenEntryEnabled, bool blockScreenshot, List<AllowedAppItem>? allowedApps) => new()
+    bool hiddenEntryEnabled, bool blockScreenshot, bool requireStartupPhoto,
+    List<AllowedAppItem>? allowedApps) => new()
 {
     Version = "0.0.0", // 由发布流程覆盖
     GeneratedAt = DateTimeOffset.Now.ToString("yyyy-MM-dd'T'HH:mm:sszzz"),
@@ -105,6 +121,7 @@ AppConfig BuildConfig(string title, string homeUrl, string fallbackUrl, string m
     Kiosk = kiosk,
     HiddenEntryEnabled = hiddenEntryEnabled,
     BlockScreenshot = blockScreenshot,
+    RequireStartupPhoto = requireStartupPhoto,
     AllowedApps = NormalizeAllowedApps(allowedApps),
     AdminPinHash = pinHash ?? ""
 };
@@ -162,7 +179,7 @@ app.MapPost("/api/setup", (SetupRequest req) =>
     var config = BuildConfig(req.Title, req.HomeUrl, req.FallbackUrl, req.Mode, req.Rules,
         req.Bookmarks, req.UpdateIntervalSeconds, req.Kiosk,
         string.IsNullOrWhiteSpace(req.AdminPin) ? null : PinHasher.HashPin(req.AdminPin),
-        req.HiddenEntryEnabled, req.BlockScreenshot, req.AllowedApps);
+        req.HiddenEntryEnabled, req.BlockScreenshot, req.RequireStartupPhoto, req.AllowedApps);
     config.Version = "1.0.0";
     var (json, signature) = SerializeAndSign(config);
     var id = db.InsertVersion("1.0.0", json, signature, "初始化配置");
@@ -217,7 +234,7 @@ app.MapPost("/api/admin/config/publish", (HttpContext ctx, PublishRequest req) =
     var version = NextVersion();
     var config = BuildConfig(req.Title, req.HomeUrl, req.FallbackUrl, req.Mode, req.Rules,
         req.Bookmarks, req.UpdateIntervalSeconds, req.Kiosk, pinHash,
-        req.HiddenEntryEnabled, req.BlockScreenshot, req.AllowedApps);
+        req.HiddenEntryEnabled, req.BlockScreenshot, req.RequireStartupPhoto, req.AllowedApps);
     config.Version = version;
     var (json, signature) = SerializeAndSign(config);
     var id = db.InsertVersion(version, json, signature, string.IsNullOrWhiteSpace(req.Note) ? "后台发布" : req.Note.Trim());
@@ -267,9 +284,29 @@ app.MapGet("/api/admin/devices", (HttpContext ctx) =>
     return Results.Ok(db.ListDevices().Select(d => new
     {
         d.DeviceId, d.Name, d.AppVersion, d.ConfigVersion, d.IpAddress,
-        d.RegisteredAt, d.LastSeen,
+        d.RegisteredAt, d.LastSeen, d.LastPhotoAt, d.PhotoSkipReason,
         online = IsOnline(d.LastSeen, threshold)
     }));
+});
+
+/// <summary>管理后台查看设备照片（需 Bearer Token）。file=latest 取该设备最新一张；否则传精确文件名。</summary>
+app.MapGet("/api/admin/photo", (HttpContext ctx) =>
+{
+    if (!IsAdmin(ctx)) return Results.Unauthorized();
+    var deviceId = ctx.Request.Query["deviceId"].FirstOrDefault()?.Trim() ?? "";
+    var file = ctx.Request.Query["file"].FirstOrDefault()?.Trim() ?? "";
+    if (string.IsNullOrWhiteSpace(deviceId) || string.IsNullOrWhiteSpace(file))
+        return Results.BadRequest(new { error = "缺少 deviceId 或 file 参数" });
+    // 白名单校验：仅允许 latest 或纯 [A-Za-z0-9._-] 的 .jpg 文件名，杜绝路径穿越
+    if (file != "latest" && !Regex.IsMatch(file, "^[A-Za-z0-9._-]+\\.jpg$"))
+        return Results.BadRequest(new { error = "非法文件名" });
+
+    var dir = Path.Combine(dataDir, "photos", deviceId);
+    string? full = file == "latest"
+        ? (Directory.Exists(dir) ? Directory.GetFiles(dir, "*.jpg").OrderByDescending(f => f).FirstOrDefault() : null)
+        : Path.Combine(dir, file);
+    if (full is null || !File.Exists(full)) return Results.NotFound(new { error = "照片不存在" });
+    return Results.File(full, "image/jpeg");
 });
 
 static bool IsOnline(string lastSeen, TimeSpan threshold)
@@ -329,6 +366,81 @@ app.MapPost("/api/v1/devices/heartbeat", (DeviceRequest req) =>
     db.TouchDeviceSeen(req.DeviceId.Trim(), req.ConfigVersion);
     return Results.Ok(new { ok = true });
 });
+
+/// <summary>
+/// 设备启动照片上报（multipart/form-data）：
+/// - 带 image：前置摄像头 JPEG，校验大小/魔数/已注册/限频后落盘，记录 last_photo_at；
+/// - 带 skip_reason：设备无前置摄像头等原因跳过拍照，仅记录原因不落盘。
+/// </summary>
+app.MapPost("/api/v1/photo", async (HttpContext ctx) =>
+{
+    var form = ctx.Request.Form;
+    var deviceId = form["device_id"].ToString().Trim();
+    var skipReason = form["skip_reason"].ToString().Trim();
+    if (string.IsNullOrWhiteSpace(deviceId))
+        return Results.BadRequest(new { error = "缺少 device_id" });
+    var device = db.GetDevice(deviceId);
+    if (device is null)
+        return Results.BadRequest(new { error = "设备未注册" });
+
+    var now = DateTimeOffset.Now;
+
+    // 带照片：限频（距上次成功接收不足 5 分钟拒绝，防止重连/恶意刷接口）
+    if (device.LastPhotoAt is not null &&
+        DateTimeOffset.TryParse(device.LastPhotoAt, CultureInfo.InvariantCulture, DateTimeStyles.None, out var last) &&
+        now - last < TimeSpan.FromSeconds(PhotoRateSeconds))
+        return Results.Json(new { error = "上传过于频繁，请稍后再试" }, statusCode: 429);
+
+    var image = form.Files.FirstOrDefault();
+    if (image is not null && image.Length > 0)
+    {
+        if (image.Length > MaxPhotoBytes)
+            return Results.BadRequest(new { error = "图片过大（上限 2MB）" });
+
+        await using var inStream = image.OpenReadStream();
+        var head = new byte[3];
+        var read = await inStream.ReadAsync(head.AsMemory(0, 3));
+        if (read < 3 || head[0] != 0xFF || head[1] != 0xD8 || head[2] != 0xFF)
+            return Results.BadRequest(new { error = "仅支持 JPEG 图片" });
+
+        var dir = Path.Combine(dataDir, "photos", deviceId);
+        Directory.CreateDirectory(dir);
+        var file = Path.Combine(dir, $"{now:yyyyMMdd_HHmmssfff}.jpg");
+        await using var outStream = File.Create(file);
+        await outStream.WriteAsync(head.AsMemory(0, 3)); // 魔数校验已消费前 3 字节，先补写回
+        await inStream.CopyToAsync(outStream);
+
+        db.SetPhotoTaken(deviceId, now.ToString("yyyy-MM-dd HH:mm:ss zzz"));
+        CleanupOldPhotos(dir); // 按天清理：删除超过保留天数的旧照片
+        return Results.Ok(new { ok = true });
+    }
+
+    if (!string.IsNullOrWhiteSpace(skipReason))
+    {
+        db.SetPhotoSkip(deviceId, skipReason);
+        return Results.Ok(new { ok = true, skipped = skipReason });
+    }
+
+    return Results.BadRequest(new { error = "缺少照片文件或跳过原因" });
+});
+
+/// <summary>删除目录中超过保留天数的照片；清理失败不影响主流程。</summary>
+static void CleanupOldPhotos(string dir)
+{
+    try
+    {
+        foreach (var f in Directory.GetFiles(dir, "*.jpg"))
+        {
+            var fi = new FileInfo(f);
+            if (DateTimeOffset.Now - fi.LastWriteTime > TimeSpan.FromDays(PhotoRetentionDays))
+                fi.Delete();
+        }
+    }
+    catch
+    {
+        // 忽略清理异常
+    }
+}
 
 app.MapGet("/api/v1/public-key", () => Results.Ok(new { publicKey = db.GetSetting("rsa_public") }));
 
