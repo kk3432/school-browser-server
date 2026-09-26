@@ -6,7 +6,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <RootNamespace>CampusBrowser.Server</RootNamespace>
     <AssemblyName>CampusBrowser.Server</AssemblyName>
-    <Version>0.5.0</Version>
+    <Version>0.6.0</Version>
     <!-- 复用 APP logo 生成的 Windows 图标（exe 图标） -->
     <ApplicationIcon>installer/campus-browser.ico</ApplicationIcon>
 

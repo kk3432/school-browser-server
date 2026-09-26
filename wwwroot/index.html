@@ -117,9 +117,9 @@
     </div>
 
     <div class="card">
-      <h3>在线设备</h3>
+      <h3>在线设备 <button id="btn-export-csv" class="mini" style="float:right;font-weight:400;">导出 CSV</button></h3>
       <table id="tbl-devices">
-        <thead><tr><th>状态</th><th>设备 ID</th><th>名称</th><th>APP 版本</th><th>配置版本</th><th>当前 IP</th><th>注册时间</th><th>最后在线</th><th>最近拍照</th><th>照片</th></tr></thead>
+        <thead><tr><th>状态</th><th>设备 ID</th><th>名称</th><th>APP 版本</th><th>配置版本</th><th>当前 IP</th><th>注册时间</th><th>最后在线</th><th>最近拍照</th><th>输错拍照</th><th>照片</th></tr></thead>
         <tbody></tbody>
       </table>
     </div>
@@ -130,6 +130,31 @@
       <textarea id="ta-pubkey" rows="6" readonly></textarea>
     </div>
   </section>
+</div>
+
+<div id="export-csv-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:100;align-items:center;justify-content:center;">
+  <div style="background:#fff;padding:20px;border-radius:8px;max-width:480px;width:90%;max-height:85vh;overflow-y:auto;">
+    <h3 style="margin-top:0;">导出设备 CSV</h3>
+    <p class="muted" style="margin:4px 0 10px;">勾选要导出的列；可按最后上线时间筛选，不选则导出全部设备。</p>
+    <div style="margin-bottom:10px;">
+      <button class="mini" id="export-select-all">全选</button>
+      <button class="mini" id="export-select-none">全不选</button>
+    </div>
+    <div id="export-columns" style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:14px;"></div>
+    <div style="margin-bottom:14px;">
+      <label style="display:block;margin-bottom:6px;font-weight:600;">按最后上线时间筛选（可选）</label>
+      <div style="display:flex;gap:8px;align-items:center;">
+        <input type="datetime-local" id="export-from" style="flex:1;">
+        <span>至</span>
+        <input type="datetime-local" id="export-to" style="flex:1;">
+      </div>
+      <label style="display:block;margin-top:8px;"><input type="checkbox" id="export-all" checked> 导出所有设备（忽略时间筛选）</label>
+    </div>
+    <div style="text-align:right;gap:8px;display:flex;justify-content:flex-end;">
+      <button class="mini" id="export-cancel">取消</button>
+      <button id="export-do">导出 CSV</button>
+    </div>
+  </div>
 </div>
 <script src="app.js"></script>
 </body>

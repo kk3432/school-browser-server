@@ -140,7 +140,7 @@ public class DeviceRequest
 
 public record VersionRow(string Version, string ConfigJson, string Signature, string PublishedAt, string? Note);
 
-public record DeviceRow(string DeviceId, string Name, string AppVersion, string ConfigVersion, string IpAddress, string RegisteredAt, string LastSeen, string? LastPhotoAt, string? PhotoSkipReason);
+public record DeviceRow(string DeviceId, string Name, string AppVersion, string ConfigVersion, string IpAddress, string RegisteredAt, string LastSeen, string? LastPhotoAt, string? PhotoSkipReason, string? LastWrongPinPhotoAt);
 
 /// <summary>教师快捷书签名目。</summary>
 public class BookmarkItem

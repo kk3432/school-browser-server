@@ -8,7 +8,8 @@ using CampusBrowser.Server.Services;
 
 // 启动拍照上传限制（v0.5.0）
 const int MaxPhotoBytes = 2 * 1024 * 1024;      // 单张照片上限 2MB
-const int PhotoRateSeconds = 300;               // 每设备 5 分钟内仅收 1 张（防刷）
+const int PhotoRateSeconds = 300;               // 启动拍照：每设备 5 分钟内仅收 1 张（防刷）
+const int WrongPinPhotoRateSeconds = 60;        // 输错密码拍照：每设备 1 分钟内仅收 1 张
 const int PhotoRetentionDays = 7;               // 照片保留天数，上传时惰性清理（按天清理策略）
 
 var builder = WebApplication.CreateBuilder(args);
@@ -284,27 +285,141 @@ app.MapGet("/api/admin/devices", (HttpContext ctx) =>
     return Results.Ok(db.ListDevices().Select(d => new
     {
         d.DeviceId, d.Name, d.AppVersion, d.ConfigVersion, d.IpAddress,
-        d.RegisteredAt, d.LastSeen, d.LastPhotoAt, d.PhotoSkipReason,
+        d.RegisteredAt, d.LastSeen, d.LastPhotoAt, d.PhotoSkipReason, d.LastWrongPinPhotoAt,
         online = IsOnline(d.LastSeen, threshold)
     }));
 });
 
-/// <summary>管理后台查看设备照片（需 Bearer Token）。file=latest 取该设备最新一张；否则传精确文件名。</summary>
+/// <summary>
+/// 设备列表 CSV 导出（需 Bearer Token）。
+/// 查询参数：columns=逗号分隔列key（不传=全部）；from/to=最后上线时间范围（ISO，不传=全部设备）。
+/// 列 key：online,deviceId,name,appVersion,configVersion,ipAddress,registeredAt,lastSeen,lastPhotoAt,photoSkipReason,lastWrongPinPhotoAt
+/// </summary>
+app.MapGet("/api/admin/devices/export.csv", (HttpContext ctx) =>
+{
+    if (!IsAdmin(ctx)) return Results.Unauthorized();
+
+    var allColumns = new (string key, string header)[]
+    {
+        ("online", "在线状态"),
+        ("deviceId", "设备识别码"),
+        ("name", "名称"),
+        ("appVersion", "APP版本"),
+        ("configVersion", "配置版本"),
+        ("ipAddress", "IP地址"),
+        ("registeredAt", "注册时间"),
+        ("lastSeen", "最后上线时间"),
+        ("lastPhotoAt", "最近启动拍照"),
+        ("photoSkipReason", "拍照跳过原因"),
+        ("lastWrongPinPhotoAt", "最近输错拍照"),
+    };
+
+    var columnsParam = ctx.Request.Query["columns"].FirstOrDefault()?.Trim();
+    var selected = string.IsNullOrWhiteSpace(columnsParam)
+        ? allColumns
+        : columnsParam.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Join(allColumns, k => k, c => c.key, (k, c) => c)
+            .ToArray();
+    if (selected.Length == 0) selected = allColumns;
+
+    // 时间筛选（按最后上线时间 lastSeen）
+    var fromStr = ctx.Request.Query["from"].FirstOrDefault()?.Trim();
+    var toStr = ctx.Request.Query["to"].FirstOrDefault()?.Trim();
+    DateTimeOffset? fromDt = null, toDt = null;
+    if (!string.IsNullOrWhiteSpace(fromStr) && DateTimeOffset.TryParse(fromStr, out var f)) fromDt = f;
+    if (!string.IsNullOrWhiteSpace(toStr) && DateTimeOffset.TryParse(toStr, out var t)) toDt = t;
+
+    // 在线判定阈值（与 devices 列表一致）
+    var interval = 300;
+    var currentJson = db.GetCurrentVersion()?.ConfigJson;
+    if (currentJson is not null)
+    {
+        using var doc = JsonDocument.Parse(currentJson);
+        if (doc.RootElement.TryGetProperty("update_interval_seconds", out var iv))
+            interval = iv.GetInt32();
+    }
+    var threshold = TimeSpan.FromSeconds(Math.Max(interval * 2, 120));
+
+    var devices = db.ListDevices().Where(d =>
+    {
+        if (fromDt is null && toDt is null) return true;
+        if (!DateTimeOffset.TryParse(d.LastSeen, CultureInfo.InvariantCulture, DateTimeStyles.None, out var ls)) return false;
+        if (fromDt is not null && ls < fromDt) return false;
+        if (toDt is not null && ls > toDt) return false;
+        return true;
+    }).ToList();
+
+    var sb = new StringBuilder();
+    sb.Append('\uFEFF'); // UTF-8 BOM，Excel 正确识别中文
+    sb.AppendLine(string.Join(',', selected.Select(c => EscapeCsv(c.header))));
+    foreach (var d in devices)
+    {
+        var online = IsOnline(d.LastSeen, threshold) ? "在线" : "离线";
+        var values = selected.Select(c => c.key switch
+        {
+            "online" => online,
+            "deviceId" => d.DeviceId,
+            "name" => d.Name ?? "",
+            "appVersion" => d.AppVersion ?? "",
+            "configVersion" => d.ConfigVersion ?? "",
+            "ipAddress" => d.IpAddress ?? "",
+            "registeredAt" => d.RegisteredAt ?? "",
+            "lastSeen" => d.LastSeen ?? "",
+            "lastPhotoAt" => d.LastPhotoAt ?? "",
+            "photoSkipReason" => d.PhotoSkipReason ?? "",
+            "lastWrongPinPhotoAt" => d.LastWrongPinPhotoAt ?? "",
+            _ => ""
+        });
+        sb.AppendLine(string.Join(',', values.Select(EscapeCsv)));
+    }
+
+    var filename = $"devices_{DateTimeOffset.Now:yyyyMMdd_HHmmss}.csv";
+    ctx.Response.Headers["Content-Disposition"] = $"attachment; filename=\"{filename}\"";
+    return Results.Text(sb.ToString(), "text/csv; charset=utf-8");
+});
+
+static string EscapeCsv(string? s)
+{
+    if (s is null) return "";
+    if (s.Contains(',') || s.Contains('"') || s.Contains('\n') || s.Contains('\r'))
+        return "\"" + s.Replace("\"", "\"\"") + "\"";
+    return s;
+}
+
+/// <summary>管理后台查看设备照片（需 Bearer Token）。type=startup(默认)|wrong_pin；file=latest 取该类型最新一张，否则传精确文件名。</summary>
 app.MapGet("/api/admin/photo", (HttpContext ctx) =>
 {
     if (!IsAdmin(ctx)) return Results.Unauthorized();
     var deviceId = ctx.Request.Query["deviceId"].FirstOrDefault()?.Trim() ?? "";
     var file = ctx.Request.Query["file"].FirstOrDefault()?.Trim() ?? "";
+    var type = ctx.Request.Query["type"].FirstOrDefault()?.Trim() ?? "startup";
+    if (type != "startup" && type != "wrong_pin") type = "startup";
     if (string.IsNullOrWhiteSpace(deviceId) || string.IsNullOrWhiteSpace(file))
         return Results.BadRequest(new { error = "缺少 deviceId 或 file 参数" });
     // 白名单校验：仅允许 latest 或纯 [A-Za-z0-9._-] 的 .jpg 文件名，杜绝路径穿越
     if (file != "latest" && !Regex.IsMatch(file, "^[A-Za-z0-9._-]+\\.jpg$"))
         return Results.BadRequest(new { error = "非法文件名" });
 
-    var dir = Path.Combine(dataDir, "photos", deviceId);
-    string? full = file == "latest"
-        ? (Directory.Exists(dir) ? Directory.GetFiles(dir, "*.jpg").OrderByDescending(f => f).FirstOrDefault() : null)
-        : Path.Combine(dir, file);
+    // 按 type 分子目录；startup 兼容 v0.5.0 旧照片（在设备根目录）
+    var dir = Path.Combine(dataDir, "photos", deviceId, type);
+    string? full;
+    if (file == "latest")
+    {
+        full = Directory.Exists(dir)
+            ? Directory.GetFiles(dir, "*.jpg").OrderByDescending(f => f).FirstOrDefault()
+            : null;
+        // startup 类型回退旧目录（v0.5.0 照片直接放在设备根目录）
+        if (full is null && type == "startup")
+        {
+            var legacyDir = Path.Combine(dataDir, "photos", deviceId);
+            if (Directory.Exists(legacyDir))
+                full = Directory.GetFiles(legacyDir, "*.jpg").OrderByDescending(f => f).FirstOrDefault();
+        }
+    }
+    else
+    {
+        full = Path.Combine(dir, file);
+    }
     if (full is null || !File.Exists(full)) return Results.NotFound(new { error = "照片不存在" });
     return Results.File(full, "image/jpeg");
 });
@@ -368,15 +483,21 @@ app.MapPost("/api/v1/devices/heartbeat", (DeviceRequest req) =>
 });
 
 /// <summary>
-/// 设备启动照片上报（multipart/form-data）：
-/// - 带 image：前置摄像头 JPEG，校验大小/魔数/已注册/限频后落盘，记录 last_photo_at；
-/// - 带 skip_reason：设备无前置摄像头等原因跳过拍照，仅记录原因不落盘。
+/// 设备照片上报（multipart/form-data），按 type 分目录/限频/字段：
+/// - type=startup（默认，兼容 v0.5.0）：启动前置拍照，5 分钟限频，记录 last_photo_at
+/// - type=wrong_pin：输错密码拍照，1 分钟限频，记录 last_wrong_pin_photo_at
+/// - 带 image：JPEG 校验大小/魔数/已注册后落盘 data/photos/{deviceId}/{type}/
+/// - 带 skip_reason：仅 startup 记录跳过原因
 /// </summary>
 app.MapPost("/api/v1/photo", async (HttpContext ctx) =>
 {
     var form = ctx.Request.Form;
     var deviceId = form["device_id"].ToString().Trim();
     var skipReason = form["skip_reason"].ToString().Trim();
+    var type = form["type"].ToString().Trim();
+    if (string.IsNullOrWhiteSpace(type)) type = "startup";
+    if (type != "startup" && type != "wrong_pin")
+        return Results.BadRequest(new { error = "非法 type 参数" });
     if (string.IsNullOrWhiteSpace(deviceId))
         return Results.BadRequest(new { error = "缺少 device_id" });
     var device = db.GetDevice(deviceId);
@@ -385,10 +506,12 @@ app.MapPost("/api/v1/photo", async (HttpContext ctx) =>
 
     var now = DateTimeOffset.Now;
 
-    // 带照片：限频（距上次成功接收不足 5 分钟拒绝，防止重连/恶意刷接口）
-    if (device.LastPhotoAt is not null &&
-        DateTimeOffset.TryParse(device.LastPhotoAt, CultureInfo.InvariantCulture, DateTimeStyles.None, out var last) &&
-        now - last < TimeSpan.FromSeconds(PhotoRateSeconds))
+    // 按 type 分别限频
+    var lastPhotoStr = type == "wrong_pin" ? device.LastWrongPinPhotoAt : device.LastPhotoAt;
+    var rateSeconds = type == "wrong_pin" ? WrongPinPhotoRateSeconds : PhotoRateSeconds;
+    if (lastPhotoStr is not null &&
+        DateTimeOffset.TryParse(lastPhotoStr, CultureInfo.InvariantCulture, DateTimeStyles.None, out var last) &&
+        now - last < TimeSpan.FromSeconds(rateSeconds))
         return Results.Json(new { error = "上传过于频繁，请稍后再试" }, statusCode: 429);
 
     var image = form.Files.FirstOrDefault();
@@ -403,21 +526,26 @@ app.MapPost("/api/v1/photo", async (HttpContext ctx) =>
         if (read < 3 || head[0] != 0xFF || head[1] != 0xD8 || head[2] != 0xFF)
             return Results.BadRequest(new { error = "仅支持 JPEG 图片" });
 
-        var dir = Path.Combine(dataDir, "photos", deviceId);
+        // 按 type 分目录：data/photos/{deviceId}/{type}/
+        var dir = Path.Combine(dataDir, "photos", deviceId, type);
         Directory.CreateDirectory(dir);
         var file = Path.Combine(dir, $"{now:yyyyMMdd_HHmmssfff}.jpg");
         await using var outStream = File.Create(file);
         await outStream.WriteAsync(head.AsMemory(0, 3)); // 魔数校验已消费前 3 字节，先补写回
         await inStream.CopyToAsync(outStream);
 
-        db.SetPhotoTaken(deviceId, now.ToString("yyyy-MM-dd HH:mm:ss zzz"));
-        CleanupOldPhotos(dir); // 按天清理：删除超过保留天数的旧照片
+        if (type == "wrong_pin")
+            db.SetWrongPinPhotoTaken(deviceId, now.ToString("yyyy-MM-dd HH:mm:ss zzz"));
+        else
+            db.SetPhotoTaken(deviceId, now.ToString("yyyy-MM-dd HH:mm:ss zzz"));
+        CleanupOldPhotos(dir);
         return Results.Ok(new { ok = true });
     }
 
     if (!string.IsNullOrWhiteSpace(skipReason))
     {
-        db.SetPhotoSkip(deviceId, skipReason);
+        if (type == "startup")
+            db.SetPhotoSkip(deviceId, skipReason);
         return Results.Ok(new { ok = true, skipped = skipReason });
     }
 

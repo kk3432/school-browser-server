@@ -68,6 +68,7 @@ public class Database
         EnsureColumn(conn, "devices", "ip_address", "TEXT");
         EnsureColumn(conn, "devices", "last_photo_at", "TEXT");
         EnsureColumn(conn, "devices", "photo_skip_reason", "TEXT");
+        EnsureColumn(conn, "devices", "last_wrong_pin_photo_at", "TEXT");
     }
 
     /// <summary>列不存在时 ALTER TABLE 补列，保护已部署的旧数据库。</summary>
@@ -250,7 +251,7 @@ public class Database
         using var cmd = conn.CreateCommand();
         cmd.CommandText = """
             SELECT device_id, name, app_version, config_version, ip_address, registered_at, last_seen,
-                   last_photo_at, photo_skip_reason
+                   last_photo_at, photo_skip_reason, last_wrong_pin_photo_at
             FROM devices ORDER BY last_seen DESC;
             """;
         using var reader = cmd.ExecuteReader();
@@ -264,7 +265,7 @@ public class Database
         using var cmd = conn.CreateCommand();
         cmd.CommandText = """
             SELECT device_id, name, app_version, config_version, ip_address, registered_at, last_seen,
-                   last_photo_at, photo_skip_reason
+                   last_photo_at, photo_skip_reason, last_wrong_pin_photo_at
             FROM devices WHERE device_id=$id;
             """;
         cmd.Parameters.AddWithValue("$id", deviceId);
@@ -281,7 +282,8 @@ public class Database
         reader.GetString(5),
         reader.GetString(6),
         reader.IsDBNull(7) ? null : reader.GetString(7),
-        reader.IsDBNull(8) ? null : reader.GetString(8));
+        reader.IsDBNull(8) ? null : reader.GetString(8),
+        reader.IsDBNull(9) ? null : reader.GetString(9));
 
     /// <summary>照片接收成功后记录时间并清除跳过原因（限频与后台展示依据）。</summary>
     public void SetPhotoTaken(string deviceId, string at)
@@ -301,6 +303,17 @@ public class Database
         using var cmd = conn.CreateCommand();
         cmd.CommandText = "UPDATE devices SET photo_skip_reason=$r WHERE device_id=$id;";
         cmd.Parameters.AddWithValue("$r", reason);
+        cmd.Parameters.AddWithValue("$id", deviceId);
+        cmd.ExecuteNonQuery();
+    }
+
+    /// <summary>输错密码拍照接收成功后记录时间（与启动拍照独立，用于后台告警）。</summary>
+    public void SetWrongPinPhotoTaken(string deviceId, string at)
+    {
+        using var conn = Open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = "UPDATE devices SET last_wrong_pin_photo_at=$at WHERE device_id=$id;";
+        cmd.Parameters.AddWithValue("$at", at);
         cmd.Parameters.AddWithValue("$id", deviceId);
         cmd.ExecuteNonQuery();
     }
