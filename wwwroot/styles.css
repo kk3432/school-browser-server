@@ -1,0 +1,79 @@
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  background: #eef2f7; color: #1e293b; line-height: 1.6;
+}
+.wrap { max-width: 960px; margin: 0 auto; padding: 28px 18px 48px; }
+header { text-align: center; margin-bottom: 22px; }
+h1 { font-size: 24px; }
+.page-header { display: flex; align-items: center; gap: 14px; text-align: left; }
+.page-header h1 { margin: 0; }
+.page-header p { margin: 4px 0 0; }
+.page-logo { width: 52px; height: 52px; border-radius: 12px; flex-shrink: 0; }
+h2 { font-size: 18px; margin-bottom: 14px; }
+h3 { font-size: 15px; margin-bottom: 10px; }
+.muted { color: #64748b; font-size: 13px; margin: 6px 0 14px; }
+.hidden { display: none !important; }
+
+.card {
+  background: #fff; border: 1px solid #e2e8f0; border-radius: 12px;
+  padding: 20px 22px; margin-bottom: 18px; box-shadow: 0 1px 3px rgba(15,23,42,.05);
+}
+.narrow { max-width: 420px; margin: 0 auto; }
+.bar { display: flex; justify-content: space-between; align-items: center; margin: 6px 2px 12px; }
+.bar h2 { margin: 0; }
+
+.grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px 16px; margin-bottom: 14px; }
+label { display: flex; flex-direction: column; font-size: 13px; color: #334155; gap: 5px; }
+label.full { grid-column: 1 / -1; }
+label.chk { flex-direction: row; align-items: center; gap: 8px; }
+input, select, textarea {
+  font: inherit; font-size: 14px; padding: 8px 10px;
+  border: 1px solid #cbd5e1; border-radius: 8px; background: #fff; color: #0f172a;
+  width: 100%;
+}
+textarea { resize: vertical; font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12.5px; }
+input:focus, select:focus, textarea:focus { outline: 2px solid #bfdbfe; border-color: #2563eb; }
+
+button {
+  font: inherit; font-size: 14px; padding: 9px 18px; border-radius: 8px;
+  border: 1px solid transparent; cursor: pointer;
+}
+.primary { background: #2563eb; color: #fff; }
+.primary:hover { background: #1d4ed8; }
+.ghost { background: #fff; border-color: #cbd5e1; color: #334155; margin-left: 8px; }
+.ghost:hover { background: #f1f5f9; }
+.mini { padding: 4px 10px; font-size: 12.5px; background: #fff7ed; border-color: #fdba74; color: #c2410c; }
+
+.msg { font-size: 13px; margin-top: 10px; min-height: 18px; }
+.msg.ok { color: #15803d; }
+.msg.err { color: #b91c1c; }
+
+/* 快捷书签编辑器 */
+.bm-editor { display: flex; flex-direction: column; gap: 8px; margin: 6px 0 8px; }
+.bm-row { display: grid; grid-template-columns: 1fr 1.6fr 40px; gap: 8px; align-items: center; }
+.bm-row .bm-del {
+  padding: 7px 0; border-radius: 8px; border: 1px solid #fecaca;
+  background: #fef2f2; color: #b91c1c; cursor: pointer; font-size: 16px; line-height: 1;
+}
+.bm-row .bm-del:hover { background: #fee2e2; }
+.add-bm { padding: 6px 14px; font-size: 13px; }
+
+/* 允许唤醒的应用编辑器（显示名 / 包名 / scheme / 删除） */
+.app-editor { display: flex; flex-direction: column; gap: 8px; margin: 6px 0 8px; }
+.app-row { display: grid; grid-template-columns: 1.2fr 1.4fr 1fr 40px; gap: 8px; align-items: center; }
+.app-row .app-del {
+  padding: 7px 0; border-radius: 8px; border: 1px solid #fecaca;
+  background: #fef2f2; color: #b91c1c; cursor: pointer; font-size: 16px; line-height: 1;
+}
+.app-row .app-del:hover { background: #fee2e2; }
+
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid #eef2f7; }
+th { color: #64748b; font-weight: 600; font-size: 12.5px; }
+td code { font-size: 12px; }
+#ta-pubkey { background: #f8fafc; }
+
+@media (max-width: 640px) {
+  .grid { grid-template-columns: 1fr; }
+}

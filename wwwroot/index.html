@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>校园浏览器 · 服务端管理后台</title>
+  <link rel="icon" href="favicon.ico">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="wrap">
+  <header class="page-header">
+    <img src="logo.png" alt="校园浏览器 logo" class="page-logo">
+    <div>
+      <h1>校园浏览器服务端</h1>
+      <p class="muted">配置总控台 · 表单填写后自动生成配置文件并下发</p>
+    </div>
+  </header>
+
+  <!-- 首次启动初始化向导 -->
+  <section id="screen-setup" class="card hidden">
+    <h2>首次启动 · 初始化向导</h2>
+    <p class="muted">设置管理员账号与第一份配置，完成后写入本地数据库。</p>
+    <div class="grid">
+      <label>管理员账号<input id="setup-username" autocomplete="username" placeholder="admin"></label>
+      <label>登录密码（至少 6 位）<input id="setup-password" type="password" autocomplete="new-password"></label>
+      <label>门户标题<input id="setup-title" value="校园门户"></label>
+      <label>首页网址<input id="setup-home" placeholder="https://portal.example.edu.cn"></label>
+      <label>管控模式
+        <select id="setup-mode">
+          <option value="whitelist">白名单（只放行规则内网址，推荐）</option>
+          <option value="blacklist">黑名单（默认全放行，仅拦截规则内网址）</option>
+        </select>
+      </label>
+      <label>轮询间隔（秒，30~86400）<input id="setup-interval" type="number" value="300" min="30"></label>
+      <label class="full">白/黑名单规则（一行一条，支持 *.example.edu.cn、https://host/*）
+        <textarea id="setup-rules" rows="4" placeholder="*.example.edu.cn&#10;https://jw.example.edu.cn/*"></textarea>
+      </label>
+      <div class="full">
+        <label>快捷书签（教师在 APP 工具栏一键打开；白名单模式下书签网址自动放行）</label>
+        <div id="setup-bookmarks" class="bm-editor"></div>
+        <button type="button" id="btn-setup-add-bm" class="ghost add-bm">+ 添加书签</button>
+      </div>
+      <label class="chk"><input id="setup-hidden-entry" type="checkbox" checked> 允许平板打开隐藏管理入口（Logo 连点 5 次；关闭后仅能由服务器重新开启）</label>
+      <label class="chk"><input id="setup-block-screenshot" type="checkbox" checked> 禁止截屏与录屏（FLAG_SECURE，开启后平板全局强制）</label>
+      <div class="full">
+        <label>允许唤醒的应用白名单（APP 工具栏「应用」按钮；网页内自定义 scheme 链接也按此表拉起）</label>
+        <div id="setup-apps" class="app-editor"></div>
+        <button type="button" id="btn-setup-add-app" class="ghost add-bm">+ 添加应用</button>
+      </div>
+      <label>平板 6 位管理密码（可留空）<input id="setup-pin" inputmode="numeric" maxlength="6" placeholder="6 位数字"></label>
+    </div>
+    <button id="btn-setup" class="primary">完成初始化</button>
+    <p id="setup-msg" class="msg"></p>
+  </section>
+
+  <!-- 登录 -->
+  <section id="screen-login" class="card hidden narrow">
+    <h2>管理员登录</h2>
+    <label>账号<input id="login-username" autocomplete="username"></label>
+    <label>密码<input id="login-password" type="password" autocomplete="current-password"></label>
+    <button id="btn-login" class="primary">登录</button>
+    <p id="login-msg" class="msg"></p>
+  </section>
+
+  <!-- 控制台 -->
+  <section id="screen-dashboard" class="hidden">
+    <div class="bar">
+      <h2>配置管理</h2>
+      <div>
+        <button id="btn-reload" class="ghost">刷新</button>
+        <button id="btn-logout" class="ghost">退出登录</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="grid">
+        <label>门户标题<input id="f-title"></label>
+        <label>首页网址<input id="f-home" placeholder="https://..."></label>
+        <label>备用网址（打不开时）<input id="f-fallback" placeholder="可选"></label>
+        <label>管控模式
+          <select id="f-mode">
+            <option value="whitelist">白名单（只放行规则内）</option>
+            <option value="blacklist">黑名单（仅拦截规则内）</option>
+          </select>
+        </label>
+        <label>轮询间隔（秒）<input id="f-interval" type="number" min="30"></label>
+        <label class="chk"><input id="f-kiosk" type="checkbox"> 启用全屏锁定（kiosk）</label>
+        <label class="full">规则（一行一条）<textarea id="f-rules" rows="5"></textarea></label>
+        <div class="full">
+          <label>快捷书签（APP 工具栏书签按钮中展示，白名单模式下自动放行）</label>
+          <div id="f-bookmarks" class="bm-editor"></div>
+          <button type="button" id="btn-f-add-bm" class="ghost add-bm">+ 添加书签</button>
+        </div>
+        <label class="chk"><input id="f-hidden-entry" type="checkbox" checked> 允许平板打开隐藏管理入口</label>
+        <label class="chk"><input id="f-block-screenshot" type="checkbox" checked> 禁止截屏与录屏</label>
+        <div class="full">
+          <label>允许唤醒的应用白名单（包名 / 显示名 / 触发 scheme）</label>
+          <div id="f-apps" class="app-editor"></div>
+          <button type="button" id="btn-f-add-app" class="ghost add-bm">+ 添加应用</button>
+        </div>
+        <label>平板 6 位管理密码<input id="f-pin" inputmode="numeric" maxlength="6" placeholder="留空保持不变"></label>
+        <label>发布备注（可选）<input id="f-note" placeholder="如：新增教务系统"></label>
+      </div>
+      <button id="btn-publish" class="primary">发布新版本</button>
+      <p id="pub-msg" class="msg"></p>
+    </div>
+
+    <div class="card">
+      <h3>历史版本（回滚）</h3>
+      <table id="tbl-versions">
+        <thead><tr><th>版本</th><th>发布时间</th><th>备注</th><th>操作</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+
+    <div class="card">
+      <h3>在线设备</h3>
+      <table id="tbl-devices">
+        <thead><tr><th>状态</th><th>设备 ID</th><th>名称</th><th>APP 版本</th><th>配置版本</th><th>当前 IP</th><th>注册时间</th><th>最后在线</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+
+    <div class="card">
+      <h3>配置签名公钥（内置到 APP）</h3>
+      <p class="muted">把下面内容填入 APP 端 SecurityConfig.SERVER_PUBLIC_KEY_PEM 后重新打包；留空时 APP 仅记录警告不验签（仅限调试）。</p>
+      <textarea id="ta-pubkey" rows="6" readonly></textarea>
+    </div>
+  </section>
+</div>
+<script src="app.js"></script>
+</body>
+</html>

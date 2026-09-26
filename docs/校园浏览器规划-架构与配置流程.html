@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>校园浏览器 · 规划架构与配置流程 v2（示意）</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body {
+    font-family: "PingFang SC","Microsoft YaHei","Noto Sans CJK SC",system-ui,sans-serif;
+    background:#eef2f7; color:#1e293b; line-height:1.55;
+  }
+  .wrap { max-width:1020px; margin:0 auto; padding:30px 18px 24px; }
+  header { text-align:center; margin-bottom:24px; }
+  h1 { font-size:26px; letter-spacing:.5px; }
+  .sub { font-size:13.5px; color:#64748b; margin-top:8px; }
+  .card {
+    background:#fff; border:1px solid #e2e8f0; border-radius:14px;
+    padding:22px 24px; margin-bottom:22px; box-shadow:0 1px 3px rgba(15,23,42,.05);
+  }
+  .card h2 { font-size:17px; display:flex; align-items:center; gap:10px; margin-bottom:16px; }
+  .tag {
+    display:inline-flex; align-items:center; justify-content:center;
+    min-width:30px; height:24px; padding:0 8px; border-radius:6px;
+    color:#fff; font-size:13px; font-weight:700;
+  }
+  .tag-s { background:#2563eb; }
+  .tag-f { background:#0d9488; }
+
+  .layer { border-radius:12px; padding:14px 16px 16px; }
+  .layer-server { background:#eff6ff; border:1px solid #dbeafe; }
+  .layer-app   { background:#f0fdfa; border:1px solid #ccfbf1; }
+  .layer-label { font-size:13px; font-weight:700; letter-spacing:1px; margin-bottom:12px; }
+  .layer-server .layer-label { color:#1d4ed8; }
+  .layer-app   .layer-label { color:#0f766e; }
+
+  .boxes { display:flex; flex-wrap:wrap; gap:12px; }
+  .box {
+    flex:1 1 180px; min-width:160px;
+    background:#fff; border:1px solid #dbe3ee; border-radius:9px;
+    padding:11px 13px; font-size:14px;
+  }
+  .layer-server .box { border-left:4px solid #2563eb; }
+  .layer-app .box   { border-left:4px solid #0d9488; }
+  .box-title { font-weight:600; font-size:14.5px; }
+  .box-desc, .s { font-size:12px; color:#64748b; margin-top:3px; }
+
+  .net {
+    background:#fffbeb; border:1.5px dashed #f0c36b; border-radius:12px;
+    padding:10px 14px; margin:14px 0; display:flex; flex-direction:column;
+    align-items:center; gap:5px;
+  }
+  .net-line {
+    font-size:13.5px; background:#fff7e6; border:1px solid #fde68a;
+    border-radius:7px; padding:3px 12px;
+  }
+  .net-tag { font-size:12.5px; color:#92400e; font-weight:700; letter-spacing:.5px; }
+
+  .pipeline { display:flex; flex-wrap:wrap; align-items:stretch; gap:8px; }
+  .pipeline .box { flex:1 1 130px; text-align:center; min-width:120px; }
+  .pipeline .box .s { display:block; }
+  .arr {
+    align-self:center; color:#94a3b8; font-size:20px; font-weight:700;
+    padding:0 2px; line-height:1;
+  }
+  .support { display:flex; flex-wrap:wrap; gap:12px; margin-top:14px; }
+  .support .box { text-align:center; }
+  .support .box .s { display:block; }
+
+  .note {
+    font-size:13px; color:#475569; margin-top:14px;
+    border-top:1px dashed #e2e8f0; padding-top:10px;
+  }
+  .note b { color:#1e293b; }
+  .note li { margin-left:18px; margin-top:4px; }
+
+  .flow { display:flex; flex-wrap:wrap; align-items:stretch; gap:8px; margin-top:4px; }
+  .step {
+    flex:1 1 116px; min-width:112px; background:#f8fafc;
+    border:1px solid #e2e8f0; border-radius:10px; padding:12px 10px;
+    text-align:center; font-size:13.5px; font-weight:600;
+  }
+  .step i {
+    display:flex; align-items:center; justify-content:center;
+    width:23px; height:23px; margin:0 auto 7px; border-radius:50%;
+    background:#2563eb; color:#fff; font-style:normal; font-size:12.5px; font-weight:700;
+  }
+  .step:nth-child(n+7) i { background:#0d9488; }
+  .step span { display:block; font-size:12px; color:#64748b; font-weight:400; margin-top:3px; }
+  .flow .arr { align-self:center; }
+
+  footer { text-align:center; font-size:12px; color:#94a3b8; margin-top:6px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <h1>校园浏览器 · 系统规划总览（v4）</h1>
+    <p class="sub">配置驱动 · Kotlin 安卓平板约 100 台 · ASP.NET Core（Windows Server 优先，可迁 Linux）· HTTP/HTTPS 按地址前缀自动选择 · 白/黑名单受管浏览器 · 规划示意</p>
+  </header>
+
+  <section class="card">
+    <h2><span class="tag tag-s">01</span>总体架构：服务端管配置，APP 端跑配置</h2>
+
+    <div class="layer layer-server">
+      <div class="layer-label">服务端 · 配置总控台（Windows Server 优先 → 可平滑迁移 Linux）</div>
+      <div class="boxes">
+        <div class="box">
+          <div class="box-title">管理后台（Web 表单）</div>
+          <div class="box-desc">填首页/白名单/间隔 · 发布 · 回滚</div>
+        </div>
+        <div class="box">
+          <div class="box-title">配置服务 API</div>
+          <div class="box-desc">ASP.NET Core · 版本管理 · 签名 · 分发</div>
+        </div>
+        <div class="box">
+          <div class="box-title">设备管理</div>
+          <div class="box-desc">注册 · 在线状态（分组后置）</div>
+        </div>
+        <div class="box">
+          <div class="box-title">数据存储</div>
+          <div class="box-desc">SQLite 文件库 · 备份即拷贝</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="net">
+      <div class="net-line">↑ 返回配置＋签名 · 版本更新推送</div>
+      <div class="net-line">↓ 设备注册 · 请求配置 · 心跳上报</div>
+      <div class="net-tag">HTTP / HTTPS 双通道 · 按服务器地址前缀自动选择</div>
+    </div>
+
+    <div class="layer layer-app">
+      <div class="layer-label">APP 端 · Android 平板（Kotlin 原生）· 约 100 台</div>
+      <div class="pipeline">
+        <div class="box"><div class="box-title">启动器</div><span class="s">首次填入服务器地址</span></div>
+        <div class="arr">→</div>
+        <div class="box"><div class="box-title">配置拉取</div><span class="s">http:// 或 https://</span></div>
+        <div class="arr">→</div>
+        <div class="box"><div class="box-title">验签校验</div><span class="s">防篡改</span></div>
+        <div class="arr">→</div>
+        <div class="box"><div class="box-title">执行引擎</div><span class="s">解析配置</span></div>
+        <div class="arr">→</div>
+        <div class="box"><div class="box-title">内容渲染</div><span class="s">系统 WebView · 白名单拦截</span></div>
+      </div>
+      <div class="support">
+        <div class="box"><div class="box-title">本地缓存</div><span class="s">断网也能继续跑</span></div>
+        <div class="box"><div class="box-title">更新器</div><span class="s">定时轮询新版本</span></div>
+        <div class="box"><div class="box-title">日志上报</div><span class="s">远程排障</span></div>
+        <div class="box"><div class="box-title">管理员解锁</div><span class="s">6位密码 · 改地址/临时放开</span></div>
+      </div>
+    </div>
+
+    <ul class="note">
+      <li><b>一套服务端代码跑两个系统：</b>Windows Server 上用 IIS 托管，将来迁 Linux 换成 systemd + Kestrel，业务代码零改动。</li>
+      <li><b>安卓明文 HTTP 必须显式放行：</b>Android 9 起系统默认禁止 http:// 明文，需在 network_security_config 中放行内网服务器地址，否则连不上。</li>
+      <li><b>规模估算：</b>约 100 台平板、5 分钟轮询一次 ≈ 每分钟 20 次请求，单台普通服务器即可承载，无需集群。</li>
+      <li><b>访问控制：</b>启动直达首页，白/黑名单在 WebViewClient 层逐条拦截，学生无法手输其他网址；UI 用开源库拼装（AgentWeb / SmartRefreshLayout / Material 组件）。</li>
+      <li><b>首次启动强制联网：</b>第一次进 APP 必须拉到配置，否则停在"连接服务器"页；管理员 6 位密码（MD5 本地比对）可改服务器地址或临时放开管控，重启 APP 即失效。</li>
+    </ul>
+  </section>
+
+  <section class="card">
+    <h2><span class="tag tag-f">02</span>一次配置变更的完整生命周期（示意）</h2>
+    <div class="flow">
+      <div class="step"><i>1</i>后台填表单<span>保存为草稿</span></div>
+      <div class="arr">→</div>
+      <div class="step"><i>2</i>发布新版本<span>版本 +1 · 签名</span></div>
+      <div class="arr">→</div>
+      <div class="step"><i>3</i>APP 定时请求<span>默认每 5 分钟</span></div>
+      <div class="arr">→</div>
+      <div class="step"><i>4</i>验签＋格式校验<span>不通过则拒绝</span></div>
+      <div class="arr">→</div>
+      <div class="step"><i>5</i>版本对比<span>有新版才切换</span></div>
+      <div class="arr">→</div>
+      <div class="step"><i>6</i>按配置运行<span>首页/白名单/锁定</span></div>
+      <div class="arr">→</div>
+      <div class="step"><i>7</i>出错一键回滚<span>恢复上一个版本</span></div>
+    </div>
+  </section>
+
+  <footer>校园浏览器规划 v4（示意）· Windows Server 优先 / Linux 兼容 · Kotlin 安卓平板约 100 台 · 白/黑名单 + 6位密码解锁</footer>
+
+</div>
+</body>
+</html>

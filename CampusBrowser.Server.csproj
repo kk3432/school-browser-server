@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>CampusBrowser.Server</RootNamespace>
+    <AssemblyName>CampusBrowser.Server</AssemblyName>
+    <Version>0.4.0</Version>
+    <!-- 复用 APP logo 生成的 Windows 图标（exe 图标） -->
+    <ApplicationIcon>installer/campus-browser.ico</ApplicationIcon>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="8.0.10" />
+    <PackageReference Include="Microsoft.Extensions.Hosting.WindowsServices" Version="8.0.1" />
+  </ItemGroup>
+
+  <!-- installer/ 下是安装器工程与打包资产（NSIS 脚本等），不参与服务端编译 -->
+  <ItemGroup>
+    <Compile Remove="installer/**" />
+    <Content Remove="installer/**" />
+    <EmbeddedResource Remove="installer/**" />
+    <None Remove="installer/**" />
+  </ItemGroup>
+
+</Project>

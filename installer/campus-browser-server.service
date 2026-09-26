@@ -1,0 +1,16 @@
+[Unit]
+Description=Campus Browser Server
+After=network.target
+
+[Service]
+WorkingDirectory=/opt/campus-browser-server
+ExecStart=/usr/bin/dotnet /opt/campus-browser-server/CampusBrowser.Server.dll
+Restart=always
+RestartSec=5
+KillSignal=SIGINT
+User=www-data
+Environment=ASPNETCORE_ENVIRONMENT=Production
+Environment=DOTNET_PRINT_TELEMETRY_MESSAGE=false
+
+[Install]
+WantedBy=multi-user.target

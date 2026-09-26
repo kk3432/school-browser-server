@@ -1,0 +1,23 @@
+# ===== .NET / 构建产物 =====
+[Bb]in/
+[Oo]bj/
+*.user
+*.suo
+.vs/
+
+# ===== 运行期数据（数据库、签名私钥、日志）不入库 =====
+data/
+*.db
+*.db-shm
+*.db-wal
+keys/
+*.log
+
+# ===== 安装器构建输出 =====
+installer/publish/
+installer/*.exe
+
+# ===== 通用 =====
+.DS_Store
+Thumbs.db
+*.tmp
