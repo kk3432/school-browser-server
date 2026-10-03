@@ -1,4 +1,5 @@
 using System.Text;
+using System.Collections.Concurrent;
 using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Serialization.Metadata;
@@ -11,6 +12,16 @@ const int MaxPhotoBytes = 2 * 1024 * 1024;      // 单张照片上限 2MB
 const int PhotoRateSeconds = 300;               // 启动拍照：每设备 5 分钟内仅收 1 张（防刷）
 const int WrongPinPhotoRateSeconds = 60;        // 输错密码拍照：每设备 1 分钟内仅收 1 张
 const int PhotoRetentionDays = 7;               // 照片保留天数，上传时惰性清理（按天清理策略）
+
+// PIN 服务端校验限频（v0.7.0）：每设备 60 秒窗口内最多 5 次，防暴力枚举
+const int VerifyPinWindowSeconds = 60;
+const int VerifyPinMaxHits = 5;
+
+// APP 接口 UA 校验（v0.7.0）：合法 UA 必须包含的标记
+const string AppUaMarker = "OkHttp/";
+
+// verify-pin 滑动窗口计数：deviceId -> 窗口内请求时间戳队列
+var verifyPinHits = new ConcurrentDictionary<string, Queue<long>>();
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -74,6 +85,17 @@ static string? TokenFrom(HttpContext ctx)
 }
 
 bool IsAdmin(HttpContext ctx) => db.TokenValid(TokenFrom(ctx));
+
+/// <summary>
+/// APP 接口 UA 校验（v0.7.0）：后台开关 ua_check_enabled 开启时，请求 UA 必须含 OkHttp/，否则 403。
+/// 开关默认关闭，等所有终端升级到 v0.7.0 后再由管理员在后台开启。
+/// </summary>
+bool AppUaValid(HttpContext ctx)
+{
+    var enabled = db.GetSetting("ua_check_enabled") == "true";
+    if (!enabled) return true;
+    return ctx.Request.Headers.UserAgent.ToString().Contains(AppUaMarker, StringComparison.Ordinal);
+}
 
 List<string> ParseRules(string? text) =>
     (text ?? string.Empty)
@@ -145,7 +167,7 @@ string NextVersion()
     return current + ".1";
 }
 
-IResult? ValidateConfigForm(string homeUrl, string? pin, List<BookmarkItem>? bookmarks)
+IResult? ValidateConfigForm(string homeUrl, string? pin, List<BookmarkItem>? bookmarks, string? rules = null)
 {
     if (!IsHttpUrl(homeUrl))
         return Results.BadRequest(new { error = "首页网址不正确，需以 http:// 或 https:// 开头" });
@@ -157,6 +179,18 @@ IResult? ValidateConfigForm(string homeUrl, string? pin, List<BookmarkItem>? boo
         {
             if (!IsHttpUrl(b.Url?.Trim()))
                 return Results.BadRequest(new { error = $"书签网址不正确（需 http/https 开头）：{b.Url}" });
+        }
+    }
+    // 规则端口合法性校验（v0.7.0）：host:port 中端口必须 1-65535
+    if (rules is not null)
+    {
+        foreach (var raw in ParseRules(rules))
+        {
+            var hostPart = raw.Contains("://") ? raw[(raw.IndexOf("://", StringComparison.Ordinal) + 3)..] : raw;
+            hostPart = hostPart.Split('/')[0];
+            if (hostPart.Contains(':') &&
+                (!int.TryParse(hostPart.Split(':')[1], out var p) || p is < 1 or > 65535))
+                return Results.BadRequest(new { error = $"规则端口不正确（需 1-65535）：{raw}" });
         }
     }
     return null;
@@ -171,7 +205,7 @@ app.MapPost("/api/setup", (SetupRequest req) =>
     if (db.AdminExists()) return Results.BadRequest(new { error = "系统已初始化" });
     if (string.IsNullOrWhiteSpace(req.Username) || req.Password.Length < 6)
         return Results.BadRequest(new { error = "管理员账号必填，密码至少 6 位" });
-    var invalid = ValidateConfigForm(req.HomeUrl, req.AdminPin, req.Bookmarks);
+    var invalid = ValidateConfigForm(req.HomeUrl, req.AdminPin, req.Bookmarks, req.Rules);
     if (invalid is not null) return invalid;
 
     db.SetSetting("admin_user", req.Username.Trim());
@@ -220,7 +254,7 @@ app.MapGet("/api/admin/config", (HttpContext ctx) =>
 app.MapPost("/api/admin/config/publish", (HttpContext ctx, PublishRequest req) =>
 {
     if (!IsAdmin(ctx)) return Results.Unauthorized();
-    var invalid = ValidateConfigForm(req.HomeUrl, req.AdminPin, req.Bookmarks);
+    var invalid = ValidateConfigForm(req.HomeUrl, req.AdminPin, req.Bookmarks, req.Rules);
     if (invalid is not null) return invalid;
 
     var current = db.GetCurrentVersion();
@@ -442,11 +476,32 @@ app.MapGet("/api/admin/public-key", (HttpContext ctx) =>
     return Results.Ok(new { publicKey = db.GetSetting("rsa_public") });
 });
 
+/// <summary>读取安全设置（UA 校验开关状态）。</summary>
+app.MapGet("/api/admin/security", (HttpContext ctx) =>
+{
+    if (!IsAdmin(ctx)) return Results.Unauthorized();
+    return Results.Ok(new { uaCheckEnabled = db.GetSetting("ua_check_enabled") == "true" });
+});
+
+/// <summary>更新安全设置（开启/关闭 APP 请求 UA 强制校验）。</summary>
+app.MapPost("/api/admin/security", (HttpContext ctx, SecuritySettingsRequest req) =>
+{
+    if (!IsAdmin(ctx)) return Results.Unauthorized();
+    db.SetSetting("ua_check_enabled", req.UaCheckEnabled ? "true" : "false");
+    return Results.Ok(new { ok = true, uaCheckEnabled = req.UaCheckEnabled });
+});
+
 // ============ APP 端接口（无需登录令牌） ============
 
 /// <summary>拉取当前配置：正文即被签名的原始 JSON，版本与签名放在响应头，保证字节级可验签。</summary>
 app.MapGet("/api/v1/config", async (HttpContext ctx) =>
 {
+    if (!AppUaValid(ctx))
+    {
+        ctx.Response.StatusCode = 403;
+        await ctx.Response.WriteAsync("{\"error\":\"非法客户端\"}");
+        return;
+    }
     var row = db.GetCurrentVersion();
     if (row is null)
     {
@@ -467,15 +522,17 @@ app.MapGet("/api/v1/config", async (HttpContext ctx) =>
     await ctx.Response.Body.WriteAsync(bytes);
 });
 
-app.MapPost("/api/v1/devices/register", (DeviceRequest req) =>
+app.MapPost("/api/v1/devices/register", (HttpContext ctx, DeviceRequest req) =>
 {
+    if (!AppUaValid(ctx)) return Results.Json(new { error = "非法客户端" }, statusCode: 403);
     if (string.IsNullOrWhiteSpace(req.DeviceId)) return Results.BadRequest(new { error = "缺少 device_id" });
     db.UpsertDevice(req.DeviceId.Trim(), req.Name, req.AppVersion, req.IpAddress);
     return Results.Ok(new { ok = true });
 });
 
-app.MapPost("/api/v1/devices/heartbeat", (DeviceRequest req) =>
+app.MapPost("/api/v1/devices/heartbeat", (HttpContext ctx, DeviceRequest req) =>
 {
+    if (!AppUaValid(ctx)) return Results.Json(new { error = "非法客户端" }, statusCode: 403);
     if (string.IsNullOrWhiteSpace(req.DeviceId)) return Results.BadRequest(new { error = "缺少 device_id" });
     db.UpsertDevice(req.DeviceId.Trim(), req.Name, req.AppVersion, req.IpAddress);
     db.TouchDeviceSeen(req.DeviceId.Trim(), req.ConfigVersion);
@@ -491,6 +548,8 @@ app.MapPost("/api/v1/devices/heartbeat", (DeviceRequest req) =>
 /// </summary>
 app.MapPost("/api/v1/photo", async (HttpContext ctx) =>
 {
+    if (!AppUaValid(ctx))
+        return Results.Json(new { error = "非法客户端" }, statusCode: 403);
     var form = ctx.Request.Form;
     var deviceId = form["device_id"].ToString().Trim();
     var skipReason = form["skip_reason"].ToString().Trim();
@@ -569,6 +628,42 @@ static void CleanupOldPhotos(string dir)
         // 忽略清理异常
     }
 }
+
+/// <summary>
+/// PIN 服务端校验（v0.7.0）：APP 发送 MD5(pin+盐) 哈希，服务端比对当前配置的 admin_pin_hash。
+/// 每设备 60 秒窗口限 5 次（429）；device_id 必须已注册；UA 校验与其他 APP 接口一致。
+/// </summary>
+app.MapPost("/api/v1/verify-pin", (HttpContext ctx, VerifyPinRequest req) =>
+{
+    if (!AppUaValid(ctx)) return Results.Json(new { error = "非法客户端" }, statusCode: 403);
+    if (string.IsNullOrWhiteSpace(req.DeviceId) || string.IsNullOrWhiteSpace(req.PinHash))
+        return Results.BadRequest(new { error = "缺少 device_id 或 pin_hash" });
+    var deviceId = req.DeviceId.Trim();
+    if (db.GetDevice(deviceId) is null)
+        return Results.BadRequest(new { error = "设备未注册" });
+
+    // 滑动窗口限频
+    var nowTicks = DateTimeOffset.Now.ToUnixTimeSeconds();
+    var q = verifyPinHits.GetOrAdd(deviceId, _ => new Queue<long>());
+    lock (q)
+    {
+        while (q.Count > 0 && nowTicks - q.Peek() > VerifyPinWindowSeconds) q.Dequeue();
+        if (q.Count >= VerifyPinMaxHits)
+            return Results.Json(new { error = "尝试过于频繁，请稍后再试" }, statusCode: 429);
+        q.Enqueue(nowTicks);
+    }
+
+    var currentJson = db.GetCurrentVersion()?.ConfigJson;
+    string? serverHash = null;
+    if (currentJson is not null)
+    {
+        using var doc = JsonDocument.Parse(currentJson);
+        if (doc.RootElement.TryGetProperty("admin_pin_hash", out var h)) serverHash = h.GetString();
+    }
+    var ok = !string.IsNullOrWhiteSpace(serverHash) &&
+             req.PinHash.Trim().Equals(serverHash, StringComparison.OrdinalIgnoreCase);
+    return Results.Ok(new { ok });
+});
 
 app.MapGet("/api/v1/public-key", () => Results.Ok(new { publicKey = db.GetSetting("rsa_public") }));
 

@@ -67,13 +67,22 @@
   <!-- 控制台 -->
   <section id="screen-dashboard" class="hidden">
     <div class="bar">
-      <h2>配置管理</h2>
+      <h2>控制台</h2>
       <div>
         <button id="btn-reload" class="ghost">刷新</button>
         <button id="btn-logout" class="ghost">退出登录</button>
       </div>
     </div>
 
+    <div class="tabs" role="tablist">
+      <button type="button" class="tab active" data-tab="config" role="tab">配置管理</button>
+      <button type="button" class="tab" data-tab="devices" role="tab">设备管理</button>
+      <button type="button" class="tab" data-tab="versions" role="tab">版本历史</button>
+      <button type="button" class="tab" data-tab="settings" role="tab">系统设置</button>
+    </div>
+
+    <!-- 配置管理 -->
+    <div class="tab-panel active" id="panel-config">
     <div class="card">
       <div class="grid">
         <label>门户标题<input id="f-title"></label>
@@ -87,7 +96,7 @@
         </label>
         <label>轮询间隔（秒）<input id="f-interval" type="number" min="30"></label>
         <label class="chk"><input id="f-kiosk" type="checkbox"> 启用全屏锁定（kiosk）</label>
-        <label class="full">规则（一行一条）<textarea id="f-rules" rows="5"></textarea></label>
+        <label class="full">规则（一行一条，支持 域名:端口，如 example.com:8080）<textarea id="f-rules" rows="5"></textarea></label>
         <div class="full">
           <label>快捷书签（APP 工具栏书签按钮中展示，白名单模式下自动放行）</label>
           <div id="f-bookmarks" class="bm-editor"></div>
@@ -107,27 +116,69 @@
       <button id="btn-publish" class="primary">发布新版本</button>
       <p id="pub-msg" class="msg"></p>
     </div>
-
-    <div class="card">
-      <h3>历史版本（回滚）</h3>
-      <table id="tbl-versions">
-        <thead><tr><th>版本</th><th>发布时间</th><th>备注</th><th>操作</th></tr></thead>
-        <tbody></tbody>
-      </table>
     </div>
 
+    <!-- 设备管理 -->
+    <div class="tab-panel" id="panel-devices">
     <div class="card">
-      <h3>在线设备 <button id="btn-export-csv" class="mini" style="float:right;font-weight:400;">导出 CSV</button></h3>
+      <div class="device-toolbar">
+        <h3>在线设备
+          <button id="btn-export-csv" class="mini" type="button">导出 CSV</button>
+        </h3>
+        <div class="device-controls">
+          <label class="inline">状态
+            <select id="device-filter-status">
+              <option value="all">全部</option>
+              <option value="online">在线</option>
+              <option value="offline">离线</option>
+            </select>
+          </label>
+          <input type="search" id="device-filter-keyword" placeholder="搜索 ID / 名称 / IP">
+          <label class="inline">自动刷新
+            <select id="device-auto-refresh">
+              <option value="0">关闭</option>
+              <option value="1">1 秒/次</option>
+              <option value="5">5 秒/次</option>
+            </select>
+          </label>
+        </div>
+      </div>
+      <div class="table-scroll">
       <table id="tbl-devices">
         <thead><tr><th>状态</th><th>设备 ID</th><th>名称</th><th>APP 版本</th><th>配置版本</th><th>当前 IP</th><th>注册时间</th><th>最后在线</th><th>最近拍照</th><th>输错拍照</th><th>照片</th></tr></thead>
         <tbody></tbody>
       </table>
+      </div>
+    </div>
     </div>
 
+    <!-- 版本历史 -->
+    <div class="tab-panel" id="panel-versions">
+    <div class="card">
+      <h3>历史版本（回滚）</h3>
+      <div class="table-scroll">
+      <table id="tbl-versions">
+        <thead><tr><th>版本</th><th>发布时间</th><th>备注</th><th>操作</th></tr></thead>
+        <tbody></tbody>
+      </table>
+      </div>
+    </div>
+    </div>
+
+    <!-- 系统设置 -->
+    <div class="tab-panel" id="panel-settings">
+    <div class="card">
+      <h3>安全设置</h3>
+      <label class="chk"><input id="set-ua-check" type="checkbox"> 强制校验 APP 请求 UA（仅允许 OkHttp 客户端访问配置/注册/照片接口，非法客户端返回 403）</label>
+      <p class="muted">默认关闭。请确认所有平板已升级到 v0.7.0 后再开启，否则旧版 APP 将无法连接。</p>
+      <button id="btn-save-security" class="primary">保存安全设置</button>
+      <p id="security-msg" class="msg"></p>
+    </div>
     <div class="card">
       <h3>配置签名公钥（内置到 APP）</h3>
       <p class="muted">把下面内容填入 APP 端 SecurityConfig.SERVER_PUBLIC_KEY_PEM 后重新打包；留空时 APP 仅记录警告不验签（仅限调试）。</p>
       <textarea id="ta-pubkey" rows="6" readonly></textarea>
+    </div>
     </div>
   </section>
 </div>

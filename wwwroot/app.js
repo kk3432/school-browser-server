@@ -3,7 +3,10 @@ const $ = (id) => document.getElementById(id);
 
 const state = {
   token: localStorage.getItem('cb_token') || '',
-  config: null
+  config: null,
+  devices: [],
+  autoRefreshTimer: null,
+  currentTab: 'config'
 };
 
 async function api(path, options = {}) {
@@ -161,22 +164,36 @@ function logout() {
 
 async function loadDashboard() {
   try {
-    const [config, versions, devices, key] = await Promise.all([
+    const [config, versions, devices, key, security] = await Promise.all([
       api('/api/admin/config'),
       api('/api/admin/config/versions'),
       api('/api/admin/devices'),
-      api('/api/admin/public-key')
+      api('/api/admin/public-key'),
+      api('/api/admin/security')
     ]);
     state.config = config;
+    state.devices = devices;
     fillForm(config);
     renderVersions(versions);
-    renderDevices(devices);
+    applyDeviceFilter();
     $('ta-pubkey').value = key.publicKey || '';
+    $('set-ua-check').checked = !!security.uaCheckEnabled;
     show('dashboard');
   } catch (e) {
     state.token = '';
     localStorage.removeItem('cb_token');
     show('login');
+  }
+}
+
+/** 仅刷新设备列表（自动刷新调用，不重新拉配置/版本）。 */
+async function refreshDevicesOnly() {
+  try {
+    const devices = await api('/api/admin/devices');
+    state.devices = devices;
+    applyDeviceFilter();
+  } catch (e) {
+    // 自动刷新失败静默，不打断界面
   }
 }
 
@@ -252,6 +269,22 @@ function renderVersions(list) {
     tr.querySelector('button')?.addEventListener('click', () => rollback(v.version));
     tbody.appendChild(tr);
   });
+}
+
+/** 按状态+关键词过滤设备后渲染（纯前端过滤）。 */
+function applyDeviceFilter() {
+  const status = $('device-filter-status').value;
+  const kw = $('device-filter-keyword').value.trim().toLowerCase();
+  const filtered = state.devices.filter(d => {
+    if (status === 'online' && !d.online) return false;
+    if (status === 'offline' && d.online) return false;
+    if (kw) {
+      const hay = `${d.deviceId} ${d.name || ''} ${d.ipAddress || ''}`.toLowerCase();
+      if (!hay.includes(kw)) return false;
+    }
+    return true;
+  });
+  renderDevices(filtered);
 }
 
 function renderDevices(list) {
@@ -365,6 +398,56 @@ async function doExportCsv() {
   } catch (e) { alert(e.message); }
 }
 
+// ---------- 标签分级 ----------
+
+function switchTab(tab) {
+  state.currentTab = tab;
+  document.querySelectorAll('.tab').forEach(t =>
+    t.classList.toggle('active', t.dataset.tab === tab));
+  document.querySelectorAll('.tab-panel').forEach(p => {
+    const showPanel = p.id === 'panel-' + tab;
+    p.classList.toggle('active', showPanel);
+    p.style.display = showPanel ? 'block' : 'none';
+  });
+  // 设备标签以外暂停自动刷新，回到设备标签时按当前选择恢复
+  if (tab === 'devices') {
+    setAutoRefresh(parseInt($('device-auto-refresh').value, 10) || 0);
+  } else {
+    stopAutoRefresh();
+  }
+}
+
+// ---------- 自动刷新 ----------
+
+function stopAutoRefresh() {
+  if (state.autoRefreshTimer) {
+    clearInterval(state.autoRefreshTimer);
+    state.autoRefreshTimer = null;
+  }
+}
+
+function setAutoRefresh(seconds) {
+  stopAutoRefresh();
+  if (seconds > 0 && state.currentTab === 'devices') {
+    state.autoRefreshTimer = setInterval(refreshDevicesOnly, seconds * 1000);
+  }
+}
+
+// ---------- 安全设置 ----------
+
+async function saveSecurity() {
+  setMsg('security-msg', '');
+  try {
+    const data = await api('/api/admin/security', {
+      method: 'POST',
+      body: JSON.stringify({ uaCheckEnabled: $('set-ua-check').checked })
+    });
+    setMsg('security-msg', data.uaCheckEnabled ? '已开启 UA 强制校验' : '已关闭 UA 校验', true);
+  } catch (e) {
+    setMsg('security-msg', e.message);
+  }
+}
+
 // ---------- 启动 ----------
 
 $('btn-setup').addEventListener('click', submitSetup);
@@ -377,6 +460,19 @@ $('btn-f-add-bm').addEventListener('click', () => addBookmarkRow('f-bookmarks'))
 $('btn-setup-add-app').addEventListener('click', () => addAppRow('setup-apps'));
 $('btn-f-add-app').addEventListener('click', () => addAppRow('f-apps'));
 $('btn-export-csv').addEventListener('click', openExportModal);
+$('btn-save-security').addEventListener('click', saveSecurity);
+
+// 标签切换
+document.querySelectorAll('.tab').forEach(t =>
+  t.addEventListener('click', () => switchTab(t.dataset.tab)));
+
+// 设备筛选
+$('device-filter-status').addEventListener('change', applyDeviceFilter);
+$('device-filter-keyword').addEventListener('input', applyDeviceFilter);
+
+// 自动刷新
+$('device-auto-refresh').addEventListener('change', e =>
+  setAutoRefresh(parseInt(e.target.value, 10) || 0));
 $('export-cancel').addEventListener('click', closeExportModal);
 $('export-do').addEventListener('click', doExportCsv);
 $('export-select-all').addEventListener('click', () => { $('export-columns').querySelectorAll('input').forEach(i => i.checked = true); });

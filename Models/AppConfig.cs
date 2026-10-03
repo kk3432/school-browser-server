@@ -128,6 +128,20 @@ public class LoginRequest
     public string Password { get; set; } = "";
 }
 
+/// <summary>PIN 服务端校验请求（v0.7.0）：APP 发送 MD5(pin+盐) 哈希，由服务端比对。</summary>
+public class VerifyPinRequest
+{
+    public string DeviceId { get; set; } = "";
+    public string PinHash { get; set; } = "";
+}
+
+/// <summary>更新服务端安全设置（UA 校验开关，v0.7.0）。</summary>
+public class SecuritySettingsRequest
+{
+    /// <summary>是否强制校验 APP 请求 UA 含 OkHttp；默认 false，等全部终端升级后开启。</summary>
+    public bool UaCheckEnabled { get; set; }
+}
+
 public class DeviceRequest
 {
     public string DeviceId { get; set; } = "";

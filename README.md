@@ -2,16 +2,21 @@
 
 ASP.NET Core 8 Minimal API 服务端：Web 图形化后台生成配置，向安卓平板下发带 RSA 签名的配置，管理设备与版本。数据存于本地 SQLite，Windows Server 优先、兼容 Linux。
 
-当前版本：**v0.6.0**
+当前版本：**v0.7.0**
 
 ## 功能
 
+- **分级菜单后台**：配置管理 / 设备管理 / 版本历史 / 系统设置 四个标签页，切换带淡入淡出过渡动画
 - Web 图形化后台：首页、白/黑名单、教师快捷书签、轮询间隔、6 位平板管理密码、隐藏入口开关、截屏限制、可唤醒应用白名单、启动拍照开关
+- **规则支持端口精确匹配**：`host` 匹配任意端口、`host:8080` 匹配指定端口；匹配不区分 http/https
 - 配置版本管理：发布、历史版本、一键回滚（回滚生成新版本号，终端必收到）
 - 设备管理：显示每台设备当前 IP（自动更新）、在线/离线状态、最近启动拍照、最近输错密码拍照（最近 10 分钟内输错的设备行标红告警）
-- **设备列表 CSV 导出**：可勾选导出列（设备识别码、IP、注册/上线时间、拍照状态等）、可按最后上线时间段筛选、可导出全部设备
-- **启动前置拍照**：服务端开关控制，平板启动时静默拍一张前置照片上传，无前置摄像头则上报跳过原因；照片按天清理保留 7 天
-- **输错密码拍照告警**：平板管理员密码输错时自动拍一张前置照片上传，后台设备列表可查看并标红提醒
+- **设备状态筛选**：按 全部/在线/离线 过滤 + 按 ID/名称/IP 关键词搜索
+- **设备列表自动刷新**：支持关闭 / 1 秒 / 5 秒自动刷新设备状态
+- **设备列表 CSV 导出**：可勾选导出列、可按最后上线时间段筛选、可导出全部设备
+- **PIN 服务端校验**：平板把密码 MD5 哈希发到服务端校验（不再本地比对），接口每设备每分钟限 5 次
+- **UA 安全校验（可选）**：系统设置中可开启，强制仅允许 OkHttp 客户端访问配置/注册/照片接口，非法客户端 403；默认关闭，待全部终端升级后开启
+- **启动/输错前置拍照**：服务端开关控制，拍照失败自动缓存补传；照片按天清理保留 7 天
 - 配置 RSA-2048 签名，防止篡改；私钥仅存服务端
 - 基于 NSIS 的 Windows 一键安装包：安装时可选端口/目录/开机自启/桌面快捷方式，注册为 Windows 服务
 - 端口可由程序目录下纯文本 `campus.port` 覆盖（优先级：命令行/环境变量 > campus.port > 默认 8080）
@@ -51,7 +56,7 @@ dotnet publish CampusBrowser.Server.csproj -c Release -r win-x64 \
   --self-contained true -o installer/publish/win-x64
 
 # 2. 用 NSIS 编译安装包（Linux 下 makensis 可用）
-makensis -DAPP_VERSION=0.6.0 installer/campus-browser-server.nsi
+makensis -DAPP_VERSION=0.7.0 installer/campus-browser-server.nsi
 # 输出 installer/CampusBrowserServer-setup.exe
 ```
 
@@ -74,6 +79,7 @@ dotnet publish CampusBrowser.Server.csproj -c Release -r linux-x64 \
 | POST | `/api/v1/devices/register` | 设备注册（上报名称、版本、IP） |
 | POST | `/api/v1/devices/heartbeat` | 心跳上报 |
 | POST | `/api/v1/photo` | 照片上报（type=startup 启动拍照 / wrong_pin 输错密码拍照） |
+| POST | `/api/v1/verify-pin` | PIN 哈希服务端校验（每分钟限 5 次，429） |
 | GET | `/api/v1/public-key` | 获取签名公钥 |
 
 **管理端（需 `Authorization: Bearer <token>`）**
@@ -86,6 +92,7 @@ dotnet publish CampusBrowser.Server.csproj -c Release -r linux-x64 \
 | GET | `/api/admin/devices` | 设备列表（含 IP、在线状态、拍照时间） |
 | GET | `/api/admin/devices/export.csv` | 设备列表 CSV 导出（可选列、可选时间段） |
 | GET | `/api/admin/photo?deviceId=&file=&type=` | 查看设备照片（type=startup/wrong_pin） |
+| GET/POST | `/api/admin/security` | 读取 / 更新安全设置（UA 强制校验开关） |
 | GET | `/api/admin/public-key` | 查看公钥（内置到 APP） |
 
 ## 配置字段
@@ -94,7 +101,7 @@ dotnet publish CampusBrowser.Server.csproj -c Release -r linux-x64 \
 | --- | --- |
 | `home_url` / `fallback_url` | 首页 / 备用网址 |
 | `mode` | `whitelist` 或 `blacklist` |
-| `rules` | 规则数组，支持 `*.example.edu.cn`、`https://host/*`、精确网址 |
+| `rules` | 规则数组，支持 `*.example.edu.cn`、`host:8080` 端口、`https://host/*` 路径、精确网址；不区分协议 |
 | `bookmarks` | 教师快捷书签 `[{title,url}]` |
 | `allowed_apps` | 可唤醒应用白名单 `[{package,label,scheme}]` |
 | `hidden_entry_enabled` | 是否允许 APP 隐藏入口（关闭后仅服务器可重开） |

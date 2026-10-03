@@ -69,11 +69,56 @@ button {
 .app-row .app-del:hover { background: #fee2e2; }
 
 table { width: 100%; border-collapse: collapse; font-size: 13px; }
-th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid #eef2f7; }
-th { color: #64748b; font-weight: 600; font-size: 12.5px; }
+th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid #eef2f7; }
+th { color: #64748b; font-weight: 600; font-size: 12.5px; white-space: nowrap; }
 td code { font-size: 12px; }
+/* 宽表格横向滚动，避免列挤压 */
+.table-scroll { overflow-x: auto; }
+.table-scroll table { min-width: 760px; }
 #ta-pubkey { background: #f8fafc; }
 
 @media (max-width: 640px) {
   .grid { grid-template-columns: 1fr; }
+}
+
+/* ===== 标签分级（v0.7.0）===== */
+.tabs {
+  display: flex; gap: 4px; background: #fff; border: 1px solid #e2e8f0;
+  border-radius: 10px; padding: 5px; margin-bottom: 16px; flex-wrap: wrap;
+}
+.tab {
+  background: transparent; border: none; color: #64748b;
+  padding: 8px 18px; border-radius: 7px; font-size: 14px;
+  transition: background .18s ease, color .18s ease;
+}
+.tab:hover { background: #f1f5f9; }
+.tab.active { background: #2563eb; color: #fff; }
+
+/* 标签面板淡入淡出过渡 */
+.tab-panel { animation: panel-fade .22s ease; }
+@keyframes panel-fade {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* ===== 设备管理工具栏（v0.7.0）===== */
+.device-toolbar h3 { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+.device-controls {
+  display: flex; gap: 12px; align-items: flex-end; flex-wrap: wrap; margin-bottom: 14px;
+}
+.device-controls .inline {
+  flex-direction: row; align-items: center; gap: 6px; font-size: 13px; white-space: nowrap;
+}
+.device-controls .inline select { width: auto; padding: 7px 10px; }
+.device-controls input[type="search"] { width: 220px; }
+
+/* ===== 通用过渡动画（v0.7.0）===== */
+.card { transition: box-shadow .18s ease; }
+.card:hover { box-shadow: 0 3px 10px rgba(15,23,42,.08); }
+button { transition: background .15s ease, transform .08s ease, box-shadow .15s ease; }
+button:active { transform: scale(.97); }
+
+@media (max-width: 640px) {
+  .device-controls input[type="search"] { width: 100%; }
+  .device-controls { flex-direction: column; align-items: stretch; }
 }
