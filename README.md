@@ -2,7 +2,7 @@
 
 ASP.NET Core 8 Minimal API 服务端：Web 图形化后台生成配置，向安卓平板下发带 RSA 签名的配置，管理设备与版本。数据存于本地 SQLite，Windows Server 优先、兼容 Linux。
 
-当前版本：**v0.7.1**（安全加固版）
+当前版本：**v0.7.2**（安装器修复版）
 
 ## 功能
 
@@ -18,10 +18,11 @@ ASP.NET Core 8 Minimal API 服务端：Web 图形化后台生成配置，向安�
 - **登录安全加固（v0.7.1）**：登录接口每 IP 每分钟限 5 次（429）；用户名不存在与密码错误返回完全一致的提示，杜绝用户名枚举
 - **PIN 哈希不再下发（v0.7.1）**：下发给 APP 的配置已剥离 `admin_pin_hash`（服务端版本库保留供校验），消除哈希被未授权获取后离线穷举的风险
 - **登录令牌有效期（v0.7.1）**：Token 6 小时有效、每次请求滑动续期；过期令牌自动清理并要求重新登录
+- **安装器修复（v0.7.2）**：取消勾选"开机自启动"时安装完也会**立即启动服务**（此前服务停在"已停止"，后台和快捷方式都打不开）；管理后台快捷方式改为真正的 `.url` Internet 快捷方式（此前用 `CreateShortcut` 把网址写进 `.lnk`，双击报「Windows 找不到文件」）；卸载选"保留数据"时若临时目录被占用会中止卸载而不是误删数据库
 - **UA 安全校验（可选）**：系统设置中可开启，强制仅允许 OkHttp 客户端访问配置/注册/照片接口，非法客户端 403；默认关闭，待全部终端升级后开启
 - **启动/输错前置拍照**：服务端开关控制，拍照失败自动缓存补传；照片按天清理保留 7 天
 - 配置 RSA-2048 签名，防止篡改；私钥仅存服务端
-- 基于 NSIS 的 Windows 一键安装包：安装时可选端口/目录/开机自启/桌面快捷方式，注册为 Windows 服务
+- 基于 NSIS 的 Windows 一键安装包：安装时可选端口/目录/开机自启/桌面快捷方式，注册为 Windows 服务；**安装完成即启动服务并等待端口就绪**（"开机自启动"只影响下次开机）
 - 端口可由程序目录下纯文本 `campus.port` 覆盖（优先级：命令行/环境变量 > campus.port > 默认 8080）
 
 ## 开发运行
@@ -59,11 +60,12 @@ dotnet publish CampusBrowser.Server.csproj -c Release -r win-x64 \
   --self-contained true -o installer/publish/win-x64
 
 # 2. 用 NSIS 编译安装包（Linux 下 makensis 可用）
-makensis -DAPP_VERSION=0.7.1 installer/campus-browser-server.nsi
+makensis -DAPP_VERSION=0.7.2 installer/campus-browser-server.nsi
 # 输出 installer/CampusBrowserServer-setup.exe
+# 若在中文 Windows 上编译，追加 -INPUTCHARSET UTF8，避免无 BOM 脚本按 ACP 解析导致中文乱码
 ```
 
-安装器特性：端口占用检测、升级从注册表回填上次目录、卸载询问是否保留数据（默认保留，不会误删数据库）、自动注册服务并配置失败自动重启、放行防火墙。
+安装器特性：端口占用检测、升级从注册表回填上次目录、卸载询问是否保留数据（默认保留，不会误删数据库）、自动注册服务并配置失败自动重启、放行防火墙、**安装完成即刻启动服务并等待端口就绪**（"开机自启动"只影响下次开机）、桌面/开始菜单为 `.url` 管理后台快捷方式（未勾选桌面快捷方式时不创建，并清理旧版残留）。
 
 ### Linux（systemd）
 

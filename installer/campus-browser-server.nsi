@@ -31,6 +31,16 @@
 !include "LogicLib.nsh"
 !include "x64.nsh"
 
+; Internet 快捷方式（.url，本质是 INI）生成宏。
+; 注意：CreateShortcut 只能生成 .lnk（目标是可执行文件/文档），把网址当目标写进 .lnk
+; 会得到一个“目标不存在”的坏快捷方式，双击报「Windows 找不到文件 http://…」。
+; 打开网址必须写 .url（见 NSIS Wiki「Creating internet shortcuts」）。
+!macro CreateUrlShortcut FILEPATH URL ICONPATH
+  WriteINIStr "${FILEPATH}" "InternetShortcut" "URL" "${URL}"
+  WriteINIStr "${FILEPATH}" "InternetShortcut" "IconFile" "${ICONPATH}"
+  WriteINIStr "${FILEPATH}" "InternetShortcut" "IconIndex" "0"
+!macroend
+
 Name "${APP_NAME}"
 Unicode True
 ShowInstDetails show
@@ -95,7 +105,7 @@ Function OptionsPageCreate
   ${NSD_CreateText} 0 14u 100% 14u "${DEFAULT_PORT}"
   Pop $PortEdit
 
-  ${NSD_CreateLabel} 0 33u 100% 26u "安装程序会自动添加防火墙入站规则，供教室平板访问管理后台。"
+  ${NSD_CreateLabel} 0 33u 100% 26u "安装程序会自动添加防火墙入站规则；安装完成后立即启动服务（取消勾选开机自启动只影响下次开机是否自动运行）。"
   Pop $2
 
   ${NSD_CreateCheckbox} 0 66u 100% 12u "开机自动启动服务（推荐）"
@@ -193,10 +203,43 @@ Section "CampusBrowser Server" SecCore
   ; 服务异常退出时自动重启（教学现场可自愈）
   nsExec::Exec 'sc failure ${SERVICE_NAME} reset= 0 actions= restart/5000/restart/10000/restart/30000'
   Pop $0
-  ${If} $AutoStart == ${BST_CHECKED}
-    DetailPrint "正在启动服务…"
-    nsExec::Exec 'sc start ${SERVICE_NAME}'
+
+  ; ---- 4b. 无论是否勾选开机自启动，安装完成立即启动服务 ----
+  ; “开机自启动”只决定下开机时的启动方式（start= auto / demand）；
+  ; 若这里不启动，未勾选的用户装完后台无法访问、桌面快捷方式也打不开（历史 bug）。
+  DetailPrint "正在启动服务…"
+  nsExec::Exec 'sc start ${SERVICE_NAME}'
+  Pop $0
+  ${If} $0 != "0"
+    Sleep 2000
+    nsExec::Exec 'sc start ${SERVICE_NAME}'   ; 1056=已在运行，或首次启动较慢，再试一次
     Pop $0
+  ${EndIf}
+
+  ; 等待服务 RUNNING 且端口进入监听（最多 10 秒），使“安装完成”提示与真实状态一致
+  StrCpy $1 "0"
+  StrCpy $2 "0"
+  ${DoWhile} $1 < 10
+    Sleep 1000
+    nsExec::ExecToStack 'cmd /c sc query ${SERVICE_NAME} | findstr /C:"RUNNING"'
+    Pop $0
+    Pop $3
+    ${If} $0 == "0"
+      nsExec::ExecToStack 'cmd /c netstat -ano -p tcp | findstr "LISTENING" | findstr ":$Port "'
+      Pop $0
+      Pop $3
+      ${If} $0 == "0"
+        StrCpy $2 "1"
+        ${Break}
+      ${EndIf}
+    ${EndIf}
+    IntOp $1 $1 + 1
+  ${Loop}
+
+  ${If} $2 == "1"
+    DetailPrint "服务已启动，正在监听端口 $Port。"
+  ${Else}
+    MessageBox MB_OK|MB_ICONEXCLAMATION "服务已安装，但端口 $Port 暂时没有开始监听。$\n$\n可能原因：$\n1) 服务仍在启动，稍等十几秒再打开后台；$\n2) 端口被其他程序占用，请换端口重新安装；$\n3) 被安全软件拦截，请到「服务」中查看 ${SERVICE_DISPLAY} 并手动启动。"
   ${EndIf}
 
   ; ---- 5. 防火墙入站规则（先删旧的同名规则再建） ----
@@ -208,15 +251,19 @@ Section "CampusBrowser Server" SecCore
 
   ; ---- 6. 开始菜单快捷方式 ----
   CreateDirectory "$SMPROGRAMS\CampusBrowser"
-  CreateShortcut "$SMPROGRAMS\CampusBrowser\管理后台.lnk" \
-    "http://localhost:$Port/" "" "$INSTDIR\campus-browser.ico" 0
+  ; 打开管理后台必须用 .url（Internet 快捷方式）；CreateShortcut 只能生成 .lnk，
+  ; 把网址写进去会得到目标不存在的坏快捷方式（双击报「Windows 找不到文件」）。
+  !insertmacro CreateUrlShortcut "$SMPROGRAMS\CampusBrowser\管理后台.url" "http://localhost:$Port/" "$INSTDIR\campus-browser.ico"
+  Delete "$SMPROGRAMS\CampusBrowser\管理后台.lnk"          ; 清理旧版坏快捷方式
   CreateShortcut "$SMPROGRAMS\CampusBrowser\卸载服务端.lnk" "$INSTDIR\Uninstall.exe"
 
   ; ---- 7. 可选桌面快捷方式 ----
   ${If} $WantDesktop == ${BST_CHECKED}
-    CreateShortcut "$DESKTOP\校园浏览器管理后台.lnk" \
-      "http://localhost:$Port/" "" "$INSTDIR\campus-browser.ico" 0
+    !insertmacro CreateUrlShortcut "$DESKTOP\校园浏览器管理后台.url" "http://localhost:$Port/" "$INSTDIR\campus-browser.ico"
+  ${Else}
+    Delete "$DESKTOP\校园浏览器管理后台.url"                ; 取消勾选时清掉上次安装残留（端口可能已变）
   ${EndIf}
+  Delete "$DESKTOP\校园浏览器管理后台.lnk"                   ; 清理旧版坏快捷方式
 
   ; ---- 8. 注册表：安装信息 + 控制面板卸载项 ----
   WriteRegStr HKLM "${REG_MAIN}" "InstallLocation" "$INSTDIR"
@@ -265,7 +312,17 @@ Section "Uninstall"
   keep_data:
   DetailPrint "正在删除程序文件（保留 data 数据目录）…"
   ; 先把 data 移到临时位置，清空目录后移回，得到一个只含 data 的干净目录
+  ; 上次卸载残留的临时目录会让 Rename 失败，先清理；并校验 Rename 结果，
+  ; 否则会出现“选了保留数据却仍被 RMDir 清空”的事故（历史隐患）。
+  ${If} ${FileExists} "$TEMP\campus-data-keep\*.*"
+    RMDir /r "$TEMP\campus-data-keep"
+  ${EndIf}
+  ClearErrors
   Rename "$INSTDIR\data" "$TEMP\campus-data-keep"
+  ${If} ${Errors}
+    MessageBox MB_OK|MB_ICONSTOP "未能临时移动数据目录，已中止卸载以避免数据丢失。$\n$\n请先手动备份 $INSTDIR\data 后再卸载。"
+    Abort
+  ${EndIf}
   RMDir /r "$INSTDIR"
   CreateDirectory "$INSTDIR"
   Rename "$TEMP\campus-data-keep" "$INSTDIR\data"
@@ -276,10 +333,12 @@ Section "Uninstall"
   RMDir /r "$INSTDIR"
 
   shortcuts:
-  ; ---- 4. 快捷方式 ----
+  ; ---- 4. 快捷方式（.url 与旧版 .lnk 都要清）----
+  Delete "$SMPROGRAMS\CampusBrowser\管理后台.url"
   Delete "$SMPROGRAMS\CampusBrowser\管理后台.lnk"
   Delete "$SMPROGRAMS\CampusBrowser\卸载服务端.lnk"
   RMDir  "$SMPROGRAMS\CampusBrowser"
+  Delete "$DESKTOP\校园浏览器管理后台.url"
   Delete "$DESKTOP\校园浏览器管理后台.lnk"
 
   ; ---- 5. 注册表 ----
