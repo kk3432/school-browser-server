@@ -2,8 +2,10 @@ using System.Text;
 using System.Collections.Concurrent;
 using System.Globalization;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Text.Json.Serialization.Metadata;
 using System.Text.RegularExpressions;
+using System.Threading.RateLimiting;
 using CampusBrowser.Server.Models;
 using CampusBrowser.Server.Services;
 
@@ -16,6 +18,13 @@ const int PhotoRetentionDays = 7;               // 照片保留天数，上传�
 // PIN 服务端校验限频（v0.7.0）：每设备 60 秒窗口内最多 5 次，防暴力枚举
 const int VerifyPinWindowSeconds = 60;
 const int VerifyPinMaxHits = 5;
+
+// 管理后台登录限频（v0.7.1，M1）：每 IP 60 秒滑动窗口最多 5 次
+const int LoginWindowSeconds = 60;
+const int LoginMaxHits = 5;
+
+// 登录令牌有效期（v0.7.1，L3）：6 小时，每次有效请求滑动续期
+const long TokenTtlSeconds = 6 * 60 * 60;
 
 // APP 接口 UA 校验（v0.7.0）：合法 UA 必须包含的标记
 const string AppUaMarker = "OkHttp/";
@@ -55,6 +64,33 @@ builder.Services.ConfigureHttpJsonOptions(options =>
         JsonTypeInfoResolver.Combine(AppJsonContext.Default, new DefaultJsonTypeInfoResolver());
 });
 
+// 登录限频（v0.7.1，M1）：.NET 8 内置滑动窗口限频器，按客户端 IP 分区。
+// 参考微软官方实现（github.com/dotnet/aspnetcore RateLimiting）。
+builder.Services.AddRateLimiter(rateOptions =>
+{
+    rateOptions.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+    rateOptions.OnRejected = async (context, _) =>
+    {
+        context.HttpContext.Response.StatusCode = StatusCodes.Status429TooManyRequests;
+        context.HttpContext.Response.ContentType = "application/json; charset=utf-8";
+        await context.HttpContext.Response.WriteAsync("{\"error\":\"尝试过于频繁，请稍后再试\"}");
+    };
+    rateOptions.AddPolicy("login", httpContext =>
+        RateLimitPartition.GetSlidingWindowLimiter(
+            partitionKey: httpContext.Connection.RemoteIpAddress?.ToString()
+                         ?? httpContext.Request.Headers["X-Forwarded-For"].FirstOrDefault()
+                         ?? "unknown",
+            factory: _ => new SlidingWindowRateLimiterOptions
+            {
+                PermitLimit = LoginMaxHits,
+                Window = TimeSpan.FromSeconds(LoginWindowSeconds),
+                SegmentsPerWindow = 6,
+                QueueLimit = 0,
+                QueueProcessingOrder = QueueProcessingOrder.OldestFirst,
+                AutoReplenishment = true
+            }));
+});
+
 var app = builder.Build();
 
 var db = app.Services.GetRequiredService<Database>();
@@ -70,6 +106,7 @@ if (string.IsNullOrEmpty(db.GetSetting("rsa_private")))
 
 app.UseDefaultFiles();
 app.UseStaticFiles();
+app.UseRateLimiter();
 
 // ============ 工具函数 ============
 
@@ -84,7 +121,26 @@ static string? TokenFrom(HttpContext ctx)
         : null;
 }
 
-bool IsAdmin(HttpContext ctx) => db.TokenValid(TokenFrom(ctx));
+bool IsAdmin(HttpContext ctx) => db.TokenValid(TokenFrom(ctx), TokenTtlSeconds);
+
+/// <summary>
+/// M2（v0.7.1）：下发给 APP 前从配置 JSON 中剥离 admin_pin_hash。
+/// 版本库里仍保留该字段（供 verify-pin 读取、回滚跟随）；剥离改变了字节，
+/// 必须用私钥对剥离后的内容重新签名，APP 端 RSA 验签才能通过。
+/// </summary>
+(string Json, string Signature) StripPinForClient(string configJson)
+{
+    var obj = JsonNode.Parse(configJson)!.AsObject();
+    obj.Remove("admin_pin_hash");
+    var stripped = obj.ToJsonString(new JsonSerializerOptions
+    {
+        WriteIndented = false,
+        Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping
+    });
+    var priv = db.GetSetting("rsa_private") ?? "";
+    var signature = Signer.Sign(priv, Encoding.UTF8.GetBytes(stripped));
+    return (stripped, signature);
+}
 
 /// <summary>
 /// APP 接口 UA 校验（v0.7.0）：后台开关 ua_check_enabled 开启时，请求 UA 必须含 OkHttp/，否则 403。
@@ -226,12 +282,13 @@ app.MapPost("/api/login", (LoginRequest req) =>
 {
     var user = db.GetSetting("admin_user");
     var hash = db.GetSetting("admin_pwd_hash") ?? "";
+    // M1：用户名不存在与密码错误返回完全一致的 401 + 消息，消除用户名枚举
     if (user != req.Username.Trim() || !AdminPassword.Verify(req.Password, hash))
-        return Results.Unauthorized();
+        return Results.Json(new { error = "用户名或密码错误" }, statusCode: StatusCodes.Status401Unauthorized);
     var token = Convert.ToHexString(System.Security.Cryptography.RandomNumberGenerator.GetBytes(24)).ToLowerInvariant();
-    db.InsertToken(token);
+    db.InsertToken(token, TokenTtlSeconds);
     return Results.Ok(new { token });
-});
+}).RequireRateLimiting("login");
 
 app.MapPost("/api/logout", (HttpContext ctx) =>
 {
@@ -513,11 +570,13 @@ app.MapGet("/api/v1/config", async (HttpContext ctx) =>
     var deviceId = ctx.Request.Query["device_id"].FirstOrDefault();
     if (!string.IsNullOrWhiteSpace(deviceId)) db.TouchDeviceSeen(deviceId!, row.Version);
 
-    var bytes = Encoding.UTF8.GetBytes(row.ConfigJson);
+    // M2：剥离 admin_pin_hash 后用私钥重签，再下发（版本号不变）
+    var (clientJson, clientSignature) = StripPinForClient(row.ConfigJson);
+    var bytes = Encoding.UTF8.GetBytes(clientJson);
     ctx.Response.StatusCode = 200;
     ctx.Response.ContentType = "application/json; charset=utf-8";
     ctx.Response.Headers["X-Config-Version"] = row.Version;
-    ctx.Response.Headers["X-Signature"] = row.Signature;
+    ctx.Response.Headers["X-Signature"] = clientSignature;
     ctx.Response.ContentLength = bytes.Length;
     await ctx.Response.Body.WriteAsync(bytes);
 });

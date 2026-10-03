@@ -59,7 +59,8 @@ public class Database
             );
             CREATE TABLE IF NOT EXISTS auth_tokens(
                 token      TEXT PRIMARY KEY,
-                created_at TEXT NOT NULL
+                created_at TEXT NOT NULL,
+                expires_at INTEGER NOT NULL
             );
             """;
         cmd.ExecuteNonQuery();
@@ -69,6 +70,9 @@ public class Database
         EnsureColumn(conn, "devices", "last_photo_at", "TEXT");
         EnsureColumn(conn, "devices", "photo_skip_reason", "TEXT");
         EnsureColumn(conn, "devices", "last_wrong_pin_photo_at", "TEXT");
+        // v0.7.1：令牌过期时间（Unix 秒）。旧库补列后，存量令牌 expires_at 给 0，
+        // 由 InsertToken 之后的逻辑统一处理：迁移时把旧令牌设为“立即过期”，强制重新登录一次。
+        EnsureColumn(conn, "auth_tokens", "expires_at", "INTEGER");
     }
 
     /// <summary>列不存在时 ALTER TABLE 补列，保护已部署的旧数据库。</summary>
@@ -115,24 +119,56 @@ public class Database
 
     // ---------- 登录令牌 ----------
 
-    public void InsertToken(string token)
+    /// <summary>签发令牌，expires_at = now + ttlSeconds（v0.7.1，L3）。</summary>
+    public void InsertToken(string token, long ttlSeconds)
     {
         using var conn = Open();
         using var cmd = conn.CreateCommand();
-        cmd.CommandText = "INSERT INTO auth_tokens(token, created_at) VALUES($t, $c);";
+        cmd.CommandText = """
+            INSERT INTO auth_tokens(token, created_at, expires_at) VALUES($t, $c, $e);
+            """;
         cmd.Parameters.AddWithValue("$t", token);
         cmd.Parameters.AddWithValue("$c", Now());
+        cmd.Parameters.AddWithValue("$e", DateTimeOffset.Now.ToUnixTimeSeconds() + ttlSeconds);
         cmd.ExecuteNonQuery();
     }
 
-    public bool TokenValid(string? token)
+    /// <summary>
+    /// 校验令牌：存在且未过期才有效；有效时把 expires_at 滑动续到 now+ttlSeconds（活跃会话不被踢）。
+    /// 过期令牌惰性删除。ttlSeconds 与签发时一致。
+    /// </summary>
+    public bool TokenValid(string? token, long ttlSeconds)
     {
         if (string.IsNullOrEmpty(token)) return false;
+        var now = DateTimeOffset.Now.ToUnixTimeSeconds();
         using var conn = Open();
-        using var cmd = conn.CreateCommand();
-        cmd.CommandText = "SELECT COUNT(1) FROM auth_tokens WHERE token=$t;";
-        cmd.Parameters.AddWithValue("$t", token);
-        return Convert.ToInt64(cmd.ExecuteScalar()) > 0;
+
+        // 先惰性清理所有过期令牌，控制表体积
+        using (var purge = conn.CreateCommand())
+        {
+            purge.CommandText = "DELETE FROM auth_tokens WHERE expires_at < $now;";
+            purge.Parameters.AddWithValue("$now", now);
+            purge.ExecuteNonQuery();
+        }
+
+        long expiresAt;
+        using (var find = conn.CreateCommand())
+        {
+            find.CommandText = "SELECT expires_at FROM auth_tokens WHERE token=$t;";
+            find.Parameters.AddWithValue("$t", token);
+            var res = find.ExecuteScalar();
+            if (res is null || res == DBNull.Value) return false;
+            expiresAt = Convert.ToInt64(res);
+        }
+        if (expiresAt < now) return false; // 已过期（正常已被上面清理，双保险）
+
+        // 滑动续期
+        using var renew = conn.CreateCommand();
+        renew.CommandText = "UPDATE auth_tokens SET expires_at=$e WHERE token=$t;";
+        renew.Parameters.AddWithValue("$e", now + ttlSeconds);
+        renew.Parameters.AddWithValue("$t", token);
+        renew.ExecuteNonQuery();
+        return true;
     }
 
     public void DeleteToken(string? token)

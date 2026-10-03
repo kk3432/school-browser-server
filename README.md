@@ -2,7 +2,7 @@
 
 ASP.NET Core 8 Minimal API 服务端：Web 图形化后台生成配置，向安卓平板下发带 RSA 签名的配置，管理设备与版本。数据存于本地 SQLite，Windows Server 优先、兼容 Linux。
 
-当前版本：**v0.7.0**
+当前版本：**v0.7.1**（安全加固版）
 
 ## 功能
 
@@ -15,6 +15,9 @@ ASP.NET Core 8 Minimal API 服务端：Web 图形化后台生成配置，向安�
 - **设备列表自动刷新**：支持关闭 / 1 秒 / 5 秒自动刷新设备状态
 - **设备列表 CSV 导出**：可勾选导出列、可按最后上线时间段筛选、可导出全部设备
 - **PIN 服务端校验**：平板把密码 MD5 哈希发到服务端校验（不再本地比对），接口每设备每分钟限 5 次
+- **登录安全加固（v0.7.1）**：登录接口每 IP 每分钟限 5 次（429）；用户名不存在与密码错误返回完全一致的提示，杜绝用户名枚举
+- **PIN 哈希不再下发（v0.7.1）**：下发给 APP 的配置已剥离 `admin_pin_hash`（服务端版本库保留供校验），消除哈希被未授权获取后离线穷举的风险
+- **登录令牌有效期（v0.7.1）**：Token 6 小时有效、每次请求滑动续期；过期令牌自动清理并要求重新登录
 - **UA 安全校验（可选）**：系统设置中可开启，强制仅允许 OkHttp 客户端访问配置/注册/照片接口，非法客户端 403；默认关闭，待全部终端升级后开启
 - **启动/输错前置拍照**：服务端开关控制，拍照失败自动缓存补传；照片按天清理保留 7 天
 - 配置 RSA-2048 签名，防止篡改；私钥仅存服务端
@@ -56,7 +59,7 @@ dotnet publish CampusBrowser.Server.csproj -c Release -r win-x64 \
   --self-contained true -o installer/publish/win-x64
 
 # 2. 用 NSIS 编译安装包（Linux 下 makensis 可用）
-makensis -DAPP_VERSION=0.7.0 installer/campus-browser-server.nsi
+makensis -DAPP_VERSION=0.7.1 installer/campus-browser-server.nsi
 # 输出 installer/CampusBrowserServer-setup.exe
 ```
 
@@ -108,16 +111,18 @@ dotnet publish CampusBrowser.Server.csproj -c Release -r linux-x64 \
 | `block_screenshot` | 是否全局禁止截屏/录屏 |
 | `update_interval_seconds` | APP 轮询间隔（30~86400） |
 | `require_startup_photo` | 是否要求平板启动时拍前置照片上传（默认 false） |
-| `admin_pin_hash` | 平板 6 位管理密码哈希 |
+| `admin_pin_hash` | 平板 6 位管理密码哈希（v0.7.1 起不下发给 APP，仅服务端校验用） |
 
 ## 安全说明
 
 - 后台登录密码 PBKDF2-SHA256（10 万次迭代 + 随机盐 + 定长比较）
-- 登录令牌 192 位 CSPRNG，登出即失效
+- **登录限频**：每 IP 每分钟 5 次（v0.7.1，.NET 8 内置滑动窗口限频器）
+- **登录防枚举**：用户名不存在与密码错误返回完全一致（v0.7.1）
+- 登录令牌 192 位 CSPRNG；**6 小时 TTL + 滑动续期**，过期自动清理（v0.7.1）
 - 全部 SQL 查询参数化，无字符串拼接注入面
 - 管理后台所有动态输出经 HTML 转义（v0.4.0 修复存储型 XSS）
 - 响应不暴露 Server 头
-- 配置 RSA-2048 签名，APP 验签失败拒绝使用
+- 配置 RSA-2048 签名，APP 验签失败拒绝使用；下发前剥离 PIN 哈希并重签（v0.7.1）
 - 内网默认 HTTP，建议生产环境通过 HTTPS 反向代理或启用 TLS
 
 ## 开源协议
