@@ -11,8 +11,6 @@ using CampusBrowser.Server.Services;
 
 // 启动拍照上传限制（v0.5.0）
 const int MaxPhotoBytes = 2 * 1024 * 1024;      // 单张照片上限 2MB
-const int PhotoRateSeconds = 300;               // 启动拍照：每设备 5 分钟内仅收 1 张（防刷）
-const int WrongPinPhotoRateSeconds = 60;        // 输错密码拍照：每设备 1 分钟内仅收 1 张
 const int PhotoRetentionDays = 7;               // 照片保留天数，上传时惰性清理（按天清理策略）
 
 // PIN 服务端校验限频（v0.7.0）：每设备 60 秒窗口内最多 5 次，防暴力枚举
@@ -623,14 +621,6 @@ app.MapPost("/api/v1/photo", async (HttpContext ctx) =>
         return Results.BadRequest(new { error = "设备未注册" });
 
     var now = DateTimeOffset.Now;
-
-    // 按 type 分别限频
-    var lastPhotoStr = type == "wrong_pin" ? device.LastWrongPinPhotoAt : device.LastPhotoAt;
-    var rateSeconds = type == "wrong_pin" ? WrongPinPhotoRateSeconds : PhotoRateSeconds;
-    if (lastPhotoStr is not null &&
-        DateTimeOffset.TryParse(lastPhotoStr, CultureInfo.InvariantCulture, DateTimeStyles.None, out var last) &&
-        now - last < TimeSpan.FromSeconds(rateSeconds))
-        return Results.Json(new { error = "上传过于频繁，请稍后再试" }, statusCode: 429);
 
     var image = form.Files.FirstOrDefault();
     if (image is not null && image.Length > 0)
