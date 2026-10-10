@@ -27,6 +27,16 @@ const long TokenTtlSeconds = 6 * 60 * 60;
 // APP 接口 UA 校验（v0.7.0）：合法 UA 必须包含的标记
 const string AppUaMarker = "OkHttp/";
 
+// 在线采样（v0.8.0）：首页全天折线图的数据源，每 5 秒采一次（1 秒前端刷新仍平滑）
+const int OnlineSampleSeconds = 5;
+// 首页/曲线最多回看天数（与 Database.PurgeOldOnlineSamples 的 7 天保留对齐）
+const int OnlineSampleKeepDays = 7;
+
+// 内置 HTML 页限制（v0.8.0）：地址片段白名单正则 + 单页体积上限
+const int MaxHtmlChars = 512 * 1024; // 512 KB
+
+var HtmlSlugRegex = new Regex("^[a-z0-9][a-z0-9-]{0,63}$", RegexOptions.Compiled);
+
 // verify-pin 滑动窗口计数：deviceId -> 窗口内请求时间戳队列
 var verifyPinHits = new ConcurrentDictionary<string, Queue<long>>();
 
@@ -36,6 +46,12 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Host.UseWindowsService(o => o.ServiceName = "CampusBrowserServer");
 var dataDir = Path.Combine(AppContext.BaseDirectory, "data");
 builder.Services.AddSingleton(_ => new Database(dataDir));
+
+// 操作日志（v0.8.0）：内存队列 + 后台消费落库，请求线程不碰磁盘
+builder.Services.AddSingleton<AuditLog>();
+builder.Services.AddHostedService<AuditLogWriter>();
+// 在线采样（v0.8.0）：首页全天折线图数据
+builder.Services.AddHostedService<OnlineSampler>();
 
 // 端口优先级：命令行/环境变量显式指定 > 安装目录 campus.port 覆盖文件 > 默认 8080。
 // campus.port 为安装器写入的纯文本端口号，升级覆盖安装时该文件保留，自定义端口不丢。
@@ -94,6 +110,9 @@ var app = builder.Build();
 var db = app.Services.GetRequiredService<Database>();
 db.Init();
 
+// 操作日志（v0.8.0）：登录 IP/时间、管理操作、设备上报
+var audit = app.Services.GetRequiredService<AuditLog>();
+
 // 首次启动生成签名密钥对（私钥不出服务器）。
 if (string.IsNullOrEmpty(db.GetSetting("rsa_private")))
 {
@@ -104,6 +123,40 @@ if (string.IsNullOrEmpty(db.GetSetting("rsa_private")))
 
 app.UseDefaultFiles();
 app.UseStaticFiles();
+
+// 登录审计（v0.8.0）：把 /api/login 的响应体缓冲下来，读取状态码后再原样写回。
+// 只缓冲这一条短 JSON 响应，不读取/不记录请求体中的密码。
+app.Use(async (ctx, next) =>
+{
+    if (!ctx.Request.Path.Equals("/api/login", StringComparison.OrdinalIgnoreCase))
+    {
+        await next();
+        return;
+    }
+    var audit = ctx.RequestServices.GetRequiredService<AuditLog>();
+    var original = ctx.Response.Body;
+    using var buffer = new MemoryStream();
+    ctx.Response.Body = buffer;
+    await next();
+    buffer.Position = 0;
+    var payload = buffer.ToArray();
+    ctx.Response.Body = original;
+    // 命中登录限频时响应体已被限频器写好，这里一并搬移
+    ctx.Response.ContentLength = payload.Length;
+    await original.WriteAsync(payload);
+
+    var status = ctx.Response.StatusCode;
+    var evt = status == StatusCodes.Status200OK
+        ? AuditLog.Events.LoginOk
+        : status == StatusCodes.Status429TooManyRequests ? AuditLog.Events.LoginBlocked
+        : AuditLog.Events.LoginFail;
+    var detail = status == StatusCodes.Status200OK
+        ? "管理员登录成功"
+        : status == StatusCodes.Status429TooManyRequests ? "登录过于频繁，已按 IP 限频"
+        : "用户名或密码错误";
+    audit.Log(ctx, evt, detail, status);
+});
+
 app.UseRateLimiter();
 
 // ============ 工具函数 ============
@@ -121,6 +174,9 @@ static string? TokenFrom(HttpContext ctx)
 
 bool IsAdmin(HttpContext ctx) => db.TokenValid(TokenFrom(ctx), TokenTtlSeconds);
 
+/// <summary>审计日志里的操作人：管理端操作统一记管理员用户名。</summary>
+string AuditActor() => db.GetSetting("admin_user") ?? "";
+
 /// <summary>
 /// M2（v0.7.1）：下发给 APP 前从配置 JSON 中剥离 admin_pin_hash。
 /// 版本库里仍保留该字段（供 verify-pin 读取、回滚跟随）；剥离改变了字节，
@@ -130,6 +186,14 @@ bool IsAdmin(HttpContext ctx) => db.TokenValid(TokenFrom(ctx), TokenTtlSeconds);
 {
     var obj = JsonNode.Parse(configJson)!.AsObject();
     obj.Remove("admin_pin_hash");
+    // HTML 页：配置里只保留 slug/title 元数据，正文通过 /h/{slug} 单独下发（避免配置体积膨胀）
+    if (obj["html_pages"] is JsonArray pages)
+    {
+        foreach (var node in pages)
+        {
+            if (node is JsonObject page) page.Remove("html");
+        }
+    }
     var stripped = obj.ToJsonString(new JsonSerializerOptions
     {
         WriteIndented = false,
@@ -181,10 +245,107 @@ List<AllowedAppItem> NormalizeAllowedApps(List<AllowedAppItem>? apps) =>
         })
         .ToList();
 
+/// <summary>
+/// 内置 HTML 页（v0.8.0）：管理员在后台编辑的静态页面，随配置一起下发，
+/// APP 端只需把 URL 加进书签即可在受管 WebView 中打开（白名单模式下书签自动放行）。
+/// </summary>
+List<HtmlPageItem> NormalizeHtmlPages(List<HtmlPageItem>? pages) =>
+    (pages ?? new List<HtmlPageItem>())
+        .Where(p => !string.IsNullOrWhiteSpace(p.Slug))
+        .Select(p => new HtmlPageItem
+        {
+            Slug = p.Slug.Trim(),
+            Title = string.IsNullOrWhiteSpace(p.Title) ? p.Slug.Trim() : p.Title.Trim(),
+            Html = p.Html ?? ""
+        })
+        .ToList();
+
+/// <summary>HTML 页字段校验：slug 必须是小写字母/数字/短横线，且不重复。</summary>
+IResult? ValidateHtmlPages(List<HtmlPageItem>? pages)
+{
+    var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+    foreach (var p in pages ?? new List<HtmlPageItem>())
+    {
+        if (string.IsNullOrWhiteSpace(p.Slug) && string.IsNullOrWhiteSpace(p.Html)) continue;
+        var slug = (p.Slug ?? "").Trim();
+        if (!HtmlSlugRegex.IsMatch(slug))
+            return Results.BadRequest(new { error = $"HTML 页地址片段不合法（仅小写字母/数字/短横线，1-64 位）：{slug}" });
+        if (!seen.Add(slug))
+            return Results.BadRequest(new { error = $"HTML 页地址片段重复：{slug}" });
+        if ((p.Html ?? "").Length > MaxHtmlChars)
+            return Results.BadRequest(new { error = $"HTML 页过大（上限 {MaxHtmlChars / 1024} KB）：{slug}" });
+    }
+    return null;
+}
+
+/// <summary>解析时间参数：兼容 Unix 秒与 ISO 字符串，无法解析返回 null。</summary>
+static DateTimeOffset? ParseTimeParam(string? raw)
+{
+    if (string.IsNullOrWhiteSpace(raw)) return null;
+    if (long.TryParse(raw, out var secs) && secs > 0) return DateTimeOffset.FromUnixTimeSeconds(secs);
+    return DateTimeOffset.TryParse(raw, CultureInfo.InvariantCulture, DateTimeStyles.None, out var dt) ? dt : null;
+}
+
+/// <summary>当前配置的轮询间隔推导出的在线判定阈值：间隔 2 倍，至少 120 秒。</summary>
+TimeSpan OnlineThreshold()
+{
+    var interval = 300;
+    var currentJson = db.GetCurrentVersion()?.ConfigJson;
+    if (currentJson is not null)
+    {
+        using var doc = JsonDocument.Parse(currentJson);
+        if (doc.RootElement.TryGetProperty("update_interval_seconds", out var iv))
+            interval = iv.GetInt32();
+    }
+    return TimeSpan.FromSeconds(Math.Max(interval * 2, 120));
+}
+
+/// <summary>事件名 → 中文展示名（后台筛选与日志表共用）。</summary>
+static string EventLabel(string evt) => evt switch
+{
+    "setup_init" => "系统初始化",
+    "login_ok" => "登录成功",
+    "login_fail" => "登录失败",
+    "login_blocked" => "登录被限频",
+    "logout" => "退出登录",
+    "config_publish" => "发布配置",
+    "config_rollback" => "回滚配置",
+    "security_update" => "修改安全设置",
+    "html_save" => "保存 HTML 页",
+    "html_delete" => "删除 HTML 页",
+    "view_photo" => "查看设备照片",
+    "export_csv" => "导出 CSV",
+    "pin_verify" => "校验平板密码",
+    "device_register" => "设备注册",
+    "device_heartbeat" => "设备心跳",
+    _ => evt
+};
+
+/// <summary>后台日志筛选下拉用的事件清单。</summary>
+var EventCatalog = new (string Value, string Label)[]
+{
+    ("all", "全部事件"),
+    ("login_ok", "登录成功"),
+    ("login_fail", "登录失败"),
+    ("login_blocked", "登录被限频"),
+    ("logout", "退出登录"),
+    ("setup_init", "系统初始化"),
+    ("config_publish", "发布配置"),
+    ("config_rollback", "回滚配置"),
+    ("security_update", "修改安全设置"),
+    ("html_save", "保存 HTML 页"),
+    ("html_delete", "删除 HTML 页"),
+    ("view_photo", "查看设备照片"),
+    ("export_csv", "导出 CSV"),
+    ("pin_verify", "校验平板密码"),
+    ("device_register", "设备注册"),
+    ("device_heartbeat", "设备心跳"),
+};
+
 AppConfig BuildConfig(string title, string homeUrl, string fallbackUrl, string mode, string rules,
     List<BookmarkItem>? bookmarks, int interval, bool kiosk, string? pinHash,
     bool hiddenEntryEnabled, bool blockScreenshot, bool requireStartupPhoto,
-    List<AllowedAppItem>? allowedApps) => new()
+    List<AllowedAppItem>? allowedApps, List<HtmlPageItem>? htmlPages = null) => new()
 {
     Version = "0.0.0", // 由发布流程覆盖
     GeneratedAt = DateTimeOffset.Now.ToString("yyyy-MM-dd'T'HH:mm:sszzz"),
@@ -200,6 +361,7 @@ AppConfig BuildConfig(string title, string homeUrl, string fallbackUrl, string m
     BlockScreenshot = blockScreenshot,
     RequireStartupPhoto = requireStartupPhoto,
     AllowedApps = NormalizeAllowedApps(allowedApps),
+    HtmlPages = NormalizeHtmlPages(htmlPages),
     AdminPinHash = pinHash ?? ""
 };
 
@@ -254,12 +416,13 @@ IResult? ValidateConfigForm(string homeUrl, string? pin, List<BookmarkItem>? boo
 
 app.MapGet("/api/setup/status", () => Results.Ok(new { needsSetup = !db.AdminExists() }));
 
-app.MapPost("/api/setup", (SetupRequest req) =>
+app.MapPost("/api/setup", (SetupRequest req, HttpContext ctx) =>
 {
     if (db.AdminExists()) return Results.BadRequest(new { error = "系统已初始化" });
     if (string.IsNullOrWhiteSpace(req.Username) || req.Password.Length < 6)
         return Results.BadRequest(new { error = "管理员账号必填，密码至少 6 位" });
-    var invalid = ValidateConfigForm(req.HomeUrl, req.AdminPin, req.Bookmarks, req.Rules);
+    IResult? invalid = ValidateConfigForm(req.HomeUrl, req.AdminPin, req.Bookmarks, req.Rules);
+    if (invalid is null) invalid = ValidateHtmlPages(req.HtmlPages);
     if (invalid is not null) return invalid;
 
     db.SetSetting("admin_user", req.Username.Trim());
@@ -268,11 +431,21 @@ app.MapPost("/api/setup", (SetupRequest req) =>
     var config = BuildConfig(req.Title, req.HomeUrl, req.FallbackUrl, req.Mode, req.Rules,
         req.Bookmarks, req.UpdateIntervalSeconds, req.Kiosk,
         string.IsNullOrWhiteSpace(req.AdminPin) ? null : PinHasher.HashPin(req.AdminPin),
-        req.HiddenEntryEnabled, req.BlockScreenshot, req.RequireStartupPhoto, req.AllowedApps);
+        req.HiddenEntryEnabled, req.BlockScreenshot, req.RequireStartupPhoto, req.AllowedApps,
+        req.HtmlPages);
     config.Version = "1.0.0";
     var (json, signature) = SerializeAndSign(config);
     var id = db.InsertVersion("1.0.0", json, signature, "初始化配置");
     db.SetCurrent(id);
+    // 内置 HTML 页：初始化时提交的页面同时落库，/h/{slug} 才能直接打开
+    var createdPages = 0;
+    foreach (var p in config.HtmlPages)
+    {
+        var slug = p.Slug.Trim().ToLowerInvariant();
+        if (db.GetHtmlPage(slug) is null && db.SaveHtmlPage(0, slug, p.Title, p.Html)) createdPages++;
+    }
+    audit.Log(ctx, AuditLog.Events.SetupInit,
+        detail: $"初始化管理员 {req.Username.Trim()}，发布首版配置 1.0.0，内置 HTML 页 {createdPages} 个");
     return Results.Ok(new { ok = true, version = "1.0.0" });
 });
 
@@ -291,7 +464,9 @@ app.MapPost("/api/login", (LoginRequest req) =>
 app.MapPost("/api/logout", (HttpContext ctx) =>
 {
     if (!IsAdmin(ctx)) return Results.Unauthorized();
+    var actor = AuditActor();
     db.DeleteToken(TokenFrom(ctx));
+    audit.Log(ctx, AuditLog.Events.Logout, detail: "管理员退出登录", status: StatusCodes.Status200OK, actor: actor);
     return Results.Ok(new { ok = true });
 });
 
@@ -309,7 +484,8 @@ app.MapGet("/api/admin/config", (HttpContext ctx) =>
 app.MapPost("/api/admin/config/publish", (HttpContext ctx, PublishRequest req) =>
 {
     if (!IsAdmin(ctx)) return Results.Unauthorized();
-    var invalid = ValidateConfigForm(req.HomeUrl, req.AdminPin, req.Bookmarks, req.Rules);
+    IResult? invalid = ValidateConfigForm(req.HomeUrl, req.AdminPin, req.Bookmarks, req.Rules);
+    if (invalid is null) invalid = ValidateHtmlPages(req.HtmlPages);
     if (invalid is not null) return invalid;
 
     var current = db.GetCurrentVersion();
@@ -324,11 +500,25 @@ app.MapPost("/api/admin/config/publish", (HttpContext ctx, PublishRequest req) =
     var version = NextVersion();
     var config = BuildConfig(req.Title, req.HomeUrl, req.FallbackUrl, req.Mode, req.Rules,
         req.Bookmarks, req.UpdateIntervalSeconds, req.Kiosk, pinHash,
-        req.HiddenEntryEnabled, req.BlockScreenshot, req.RequireStartupPhoto, req.AllowedApps);
+        req.HiddenEntryEnabled, req.BlockScreenshot, req.RequireStartupPhoto, req.AllowedApps,
+        req.HtmlPages);
     config.Version = version;
     var (json, signature) = SerializeAndSign(config);
     var id = db.InsertVersion(version, json, signature, string.IsNullOrWhiteSpace(req.Note) ? "后台发布" : req.Note.Trim());
     db.SetCurrent(id);
+    // 内置 HTML 页：发布时带入的正文同样落库（正文为空的条目只更新标题，避免覆盖已有内容）
+    var touched = 0;
+    foreach (var p in config.HtmlPages)
+    {
+        var slug = p.Slug.Trim().ToLowerInvariant();
+        var existing = db.GetHtmlPage(slug);
+        var html = string.IsNullOrEmpty(p.Html) ? existing?.Html ?? "" : p.Html;
+        if (db.SaveHtmlPage(existing?.Id ?? 0, slug, p.Title, html)) touched++;
+    }
+    audit.Log(ctx, AuditLog.Events.ConfigPublish,
+        detail: $"发布配置 {version}：书签 {config.Bookmarks.Count} 个、规则 {config.Rules.Count} 条、HTML 页 {config.HtmlPages.Count} 个（同步 {touched}）" +
+                (string.IsNullOrWhiteSpace(req.Note) ? "" : $"，备注：{req.Note.Trim()}"),
+        status: StatusCodes.Status200OK, actor: AuditActor());
     return Results.Ok(new { ok = true, version });
 });
 
@@ -355,6 +545,9 @@ app.MapPost("/api/admin/config/rollback", (HttpContext ctx, string version) =>
     var (json, signature) = SerializeAndSign(config);
     var id = db.InsertVersion(newVersion, json, signature, $"回滚自 {version}");
     db.SetCurrent(id);
+    audit.Log(ctx, AuditLog.Events.ConfigRollback,
+        detail: $"回滚 {version} → 新版本 {newVersion}",
+        status: StatusCodes.Status200OK, actor: AuditActor());
     return Results.Ok(new { ok = true, version = newVersion });
 });
 
@@ -362,21 +555,117 @@ app.MapGet("/api/admin/devices", (HttpContext ctx) =>
 {
     if (!IsAdmin(ctx)) return Results.Unauthorized();
     // 在线判定阈值：轮询间隔的 2 倍，至少 120 秒
-    var interval = 300;
-    var currentJson = db.GetCurrentVersion()?.ConfigJson;
-    if (currentJson is not null)
-    {
-        using var doc = JsonDocument.Parse(currentJson);
-        if (doc.RootElement.TryGetProperty("update_interval_seconds", out var iv))
-            interval = iv.GetInt32();
-    }
-    var threshold = TimeSpan.FromSeconds(Math.Max(interval * 2, 120));
+    var threshold = OnlineThreshold();
     return Results.Ok(db.ListDevices().Select(d => new
     {
         d.DeviceId, d.Name, d.AppVersion, d.ConfigVersion, d.IpAddress,
         d.RegisteredAt, d.LastSeen, d.LastPhotoAt, d.PhotoSkipReason, d.LastWrongPinPhotoAt,
         online = IsOnline(d.LastSeen, threshold)
     }));
+});
+
+/// <summary>
+/// 首页概览指标（v0.8.0）：当前在线数 / 设备总数 / 在线百分比 + 今日 00:00 起的在线采样曲线。
+/// 前端 1 秒刷新只调这一个接口。
+/// </summary>
+app.MapGet("/api/admin/stats/overview", (HttpContext ctx) =>
+{
+    if (!IsAdmin(ctx)) return Results.Unauthorized();
+    var threshold = OnlineThreshold();
+    var devices = db.ListDevices();
+    var onlineCount = devices.Count(d => IsOnline(d.LastSeen, threshold));
+    var total = devices.Count;
+
+    // 今日 00:00（本地时区）作为曲线起点
+    var todayStart = new DateTimeOffset(DateTimeOffset.Now.Date, DateTimeOffset.Now.Offset).ToUnixTimeSeconds();
+    var rows = db.ListOnlineSamples(todayStart);
+    var samples = rows
+        .Select(s => new { ts = s.Ts, online = s.Online, total = s.Total })
+        .ToList();
+    // 采样间隔（秒）：取相邻采样点间隔的中位数，只有 1 个点时用设计值 5
+    var sampleSeconds = OnlineSampleSeconds;
+    if (rows.Count >= 3)
+    {
+        var deltas = new List<int>();
+        for (var i = 1; i < rows.Count; i++)
+        {
+            var d = (int)(rows[i].Ts - rows[i - 1].Ts);
+            if (d is > 0 and < 600) deltas.Add(d);
+        }
+        if (deltas.Count > 0)
+        {
+            deltas.Sort();
+            sampleSeconds = deltas[deltas.Count / 2];
+        }
+    }
+
+    return Results.Ok(new
+    {
+        now = DateTimeOffset.Now.ToUnixTimeSeconds(),
+        online = onlineCount,
+        offline = total - onlineCount,
+        total,
+        percent = total == 0 ? 0 : Math.Round(onlineCount * 100.0 / total, 1),
+        todayStart,
+        dayStart = DateTimeOffset.Now.Date.ToString("yyyy-MM-dd HH:mm:ss zzz"),
+        sampleSeconds,
+        keepDays = OnlineSampleKeepDays,
+        samples
+    });
+});
+
+/// <summary>操作日志查询（v0.8.0，需 Bearer Token）。从/到支持 Unix 秒或 ISO 时间。</summary>
+app.MapGet("/api/admin/logs", (HttpContext ctx) =>
+{
+    if (!IsAdmin(ctx)) return Results.Unauthorized();
+    var from = ParseTimeParam(ctx.Request.Query["from"].FirstOrDefault());
+    var to = ParseTimeParam(ctx.Request.Query["to"].FirstOrDefault());
+    var evt = ctx.Request.Query["event"].FirstOrDefault();
+    var kw = ctx.Request.Query["q"].FirstOrDefault();
+    var limit = int.TryParse(ctx.Request.Query["limit"].FirstOrDefault(), out var l) ? l : 200;
+    var offset = int.TryParse(ctx.Request.Query["offset"].FirstOrDefault(), out var o) ? o : 0;
+    var rows = db.QueryLogs(from, to, evt, kw, limit, offset);
+    var total = db.CountLogs(from, to, evt, kw);
+    return Results.Ok(new
+    {
+        total,
+        limit = Math.Clamp(limit, 1, 2000),
+        offset = Math.Max(offset, 0),
+        events = EventCatalog,
+        items = rows.Select(r => new
+        {
+            r.Id, r.Ts, r.Event, eventLabel = EventLabel(r.Event), r.Ip, r.Actor,
+            r.DeviceId, r.Method, r.Path, r.Status, r.Detail, r.UserAgent
+        })
+    });
+});
+
+/// <summary>操作日志 CSV 导出（UTF-8 BOM + RFC4180，与设备导出一致）。</summary>
+app.MapGet("/api/admin/logs/export.csv", (HttpContext ctx) =>
+{
+    if (!IsAdmin(ctx)) return Results.Unauthorized();
+    var from = ParseTimeParam(ctx.Request.Query["from"].FirstOrDefault());
+    var to = ParseTimeParam(ctx.Request.Query["to"].FirstOrDefault());
+    var evt = ctx.Request.Query["event"].FirstOrDefault();
+    var kw = ctx.Request.Query["q"].FirstOrDefault();
+    var rows = db.QueryLogsForExport(from, to, evt, kw);
+
+    var sb = new StringBuilder();
+    sb.Append('\uFEFF');
+    sb.AppendLine(string.Join(',', new[] { "时间", "事件", "IP", "操作人", "设备", "方法", "路径", "结果", "详情" }.Select(EscapeCsv)));
+    foreach (var r in rows)
+    {
+        sb.AppendLine(string.Join(',', new[]
+        {
+            r.Ts, EventLabel(r.Event), r.Ip, r.Actor, r.DeviceId, r.Method, r.Path,
+            r.Status.ToString(CultureInfo.InvariantCulture), r.Detail
+        }.Select(EscapeCsv)));
+    }
+    audit.Log(ctx, AuditLog.Events.ExportCsv,
+        detail: $"导出操作日志 {rows.Count} 条", status: StatusCodes.Status200OK, actor: AuditActor());
+    var filename = $"logs_{DateTimeOffset.Now:yyyyMMdd_HHmmss}.csv";
+    ctx.Response.Headers["Content-Disposition"] = $"attachment; filename=\"{filename}\"";
+    return Results.Text(sb.ToString(), "text/csv; charset=utf-8");
 });
 
 /// <summary>
@@ -419,15 +708,7 @@ app.MapGet("/api/admin/devices/export.csv", (HttpContext ctx) =>
     if (!string.IsNullOrWhiteSpace(toStr) && DateTimeOffset.TryParse(toStr, out var t)) toDt = t;
 
     // 在线判定阈值（与 devices 列表一致）
-    var interval = 300;
-    var currentJson = db.GetCurrentVersion()?.ConfigJson;
-    if (currentJson is not null)
-    {
-        using var doc = JsonDocument.Parse(currentJson);
-        if (doc.RootElement.TryGetProperty("update_interval_seconds", out var iv))
-            interval = iv.GetInt32();
-    }
-    var threshold = TimeSpan.FromSeconds(Math.Max(interval * 2, 120));
+    var threshold = OnlineThreshold();
 
     var devices = db.ListDevices().Where(d =>
     {
@@ -464,6 +745,8 @@ app.MapGet("/api/admin/devices/export.csv", (HttpContext ctx) =>
 
     var filename = $"devices_{DateTimeOffset.Now:yyyyMMdd_HHmmss}.csv";
     ctx.Response.Headers["Content-Disposition"] = $"attachment; filename=\"{filename}\"";
+    audit.Log(ctx, AuditLog.Events.ExportCsv,
+        detail: $"导出设备列表 CSV {devices.Count} 条", status: StatusCodes.Status200OK, actor: AuditActor());
     return Results.Text(sb.ToString(), "text/csv; charset=utf-8");
 });
 
@@ -510,6 +793,9 @@ app.MapGet("/api/admin/photo", (HttpContext ctx) =>
         full = Path.Combine(dir, file);
     }
     if (full is null || !File.Exists(full)) return Results.NotFound(new { error = "照片不存在" });
+    audit.Log(ctx, AuditLog.Events.ViewPhoto,
+        detail: $"查看设备 {deviceId} 的{(type == "wrong_pin" ? "输错密码" : "启动")}照片：{Path.GetFileName(full)}",
+        status: StatusCodes.Status200OK, actor: AuditActor(), deviceId: deviceId);
     return Results.File(full, "image/jpeg");
 });
 
@@ -538,11 +824,79 @@ app.MapGet("/api/admin/security", (HttpContext ctx) =>
     return Results.Ok(new { uaCheckEnabled = db.GetSetting("ua_check_enabled") == "true" });
 });
 
+// ============ 内置 HTML 页（v0.8.0） ============
+// 管理员在后台编辑静态 HTML，平板把 http://<服务端>/h/<slug> 加进书签即可在受管 WebView 中打开。
+
+/// <summary>HTML 页列表（含正文，供后台编辑器填充）。</summary>
+app.MapGet("/api/admin/html-pages", (HttpContext ctx) =>
+{
+    if (!IsAdmin(ctx)) return Results.Unauthorized();
+    return Results.Ok(db.ListHtmlPages().Select(p => new
+    {
+        p.Id, p.Slug, p.Title, p.Html, p.CreatedAt, p.UpdatedAt,
+        url = $"{ctx.Request.Scheme}://{ctx.Request.Host}/h/{p.Slug}",
+        size = Encoding.UTF8.GetByteCount(p.Html)
+    }));
+});
+
+/// <summary>新建或更新 HTML 页（id=0/缺省为新建）。</summary>
+app.MapPost("/api/admin/html-pages", (HttpContext ctx, HtmlPageRequest req) =>
+{
+    if (!IsAdmin(ctx)) return Results.Unauthorized();
+    var slug = (req.Slug ?? "").Trim().ToLowerInvariant();
+    if (!HtmlSlugRegex.IsMatch(slug))
+        return Results.BadRequest(new { error = "地址片段不合法：仅小写字母/数字/短横线，1-64 位（如 notice-2026）" });
+    var html = req.Html ?? "";
+    if (html.Length > MaxHtmlChars)
+        return Results.BadRequest(new { error = $"HTML 内容过大（上限 {MaxHtmlChars / 1024} KB）" });
+    var title = string.IsNullOrWhiteSpace(req.Title) ? slug : req.Title.Trim();
+
+    var existing = req.Id > 0 ? db.GetHtmlPageById(req.Id) : db.GetHtmlPage(slug);
+    var newId = existing?.Id ?? 0;
+    if (!db.SaveHtmlPage(newId, slug, title, html))
+        return Results.BadRequest(new { error = $"地址片段已被占用：{slug}" });
+    var saved = db.GetHtmlPage(slug)!;
+    audit.Log(ctx, AuditLog.Events.HtmlSave,
+        detail: $"保存 HTML 页 /h/{slug}（{title}，{Encoding.UTF8.GetByteCount(html)} 字节）",
+        status: StatusCodes.Status200OK, actor: AuditActor());
+    return Results.Ok(new { ok = true, id = saved.Id, slug = saved.Slug, url = $"{ctx.Request.Scheme}://{ctx.Request.Host}/h/{saved.Slug}" });
+});
+
+app.MapDelete("/api/admin/html-pages/{id:long}", (HttpContext ctx, long id) =>
+{
+    if (!IsAdmin(ctx)) return Results.Unauthorized();
+    var page = db.GetHtmlPageById(id);
+    if (page is null) return Results.NotFound(new { error = "HTML 页不存在" });
+    db.DeleteHtmlPage(id);
+    audit.Log(ctx, AuditLog.Events.HtmlDelete, detail: $"删除 HTML 页 /h/{page.Slug}（{page.Title}）",
+        status: StatusCodes.Status200OK, actor: AuditActor());
+    return Results.Ok(new { ok = true });
+});
+
+/// <summary>
+/// HTML 页下发（公开）：平板 WebView 直接打开 http://<服务端>/h/<slug>。
+/// 内容原样返回，仅补安全响应头（禁止被嗅探/被 iframe 嵌套）。
+/// </summary>
+app.MapGet("/h/{slug}", (HttpContext ctx, string slug) =>
+{
+    var key = (slug ?? "").Trim().ToLowerInvariant();
+    if (!HtmlSlugRegex.IsMatch(key)) return Results.NotFound("页面不存在");
+    var page = db.GetHtmlPage(key);
+    if (page is null) return Results.NotFound("页面不存在");
+    ctx.Response.Headers["X-Content-Type-Options"] = "nosniff";
+    ctx.Response.Headers["Referrer-Policy"] = "no-referrer";
+    ctx.Response.Headers["Cache-Control"] = "no-cache, must-revalidate";
+    return Results.Text(page.Html, "text/html; charset=utf-8", Encoding.UTF8);
+});
+
 /// <summary>更新安全设置（开启/关闭 APP 请求 UA 强制校验）。</summary>
 app.MapPost("/api/admin/security", (HttpContext ctx, SecuritySettingsRequest req) =>
 {
     if (!IsAdmin(ctx)) return Results.Unauthorized();
     db.SetSetting("ua_check_enabled", req.UaCheckEnabled ? "true" : "false");
+    audit.Log(ctx, AuditLog.Events.SecurityUpdate,
+        detail: $"APP 请求 UA 强制校验 → {(req.UaCheckEnabled ? "开启" : "关闭")}",
+        status: StatusCodes.Status200OK, actor: AuditActor());
     return Results.Ok(new { ok = true, uaCheckEnabled = req.UaCheckEnabled });
 });
 
@@ -583,7 +937,11 @@ app.MapPost("/api/v1/devices/register", (HttpContext ctx, DeviceRequest req) =>
 {
     if (!AppUaValid(ctx)) return Results.Json(new { error = "非法客户端" }, statusCode: 403);
     if (string.IsNullOrWhiteSpace(req.DeviceId)) return Results.BadRequest(new { error = "缺少 device_id" });
-    db.UpsertDevice(req.DeviceId.Trim(), req.Name, req.AppVersion, req.IpAddress);
+    var id = req.DeviceId.Trim();
+    db.UpsertDevice(id, req.Name, req.AppVersion, req.IpAddress);
+    audit.Log(ctx, AuditLog.Events.DeviceRegister,
+        detail: $"设备 {id} 注册：{req.Name}，APP {req.AppVersion}，上报 IP {req.IpAddress}",
+        status: StatusCodes.Status200OK, deviceId: id);
     return Results.Ok(new { ok = true });
 });
 
@@ -591,8 +949,13 @@ app.MapPost("/api/v1/devices/heartbeat", (HttpContext ctx, DeviceRequest req) =>
 {
     if (!AppUaValid(ctx)) return Results.Json(new { error = "非法客户端" }, statusCode: 403);
     if (string.IsNullOrWhiteSpace(req.DeviceId)) return Results.BadRequest(new { error = "缺少 device_id" });
-    db.UpsertDevice(req.DeviceId.Trim(), req.Name, req.AppVersion, req.IpAddress);
-    db.TouchDeviceSeen(req.DeviceId.Trim(), req.ConfigVersion);
+    var id = req.DeviceId.Trim();
+    db.UpsertDevice(id, req.Name, req.AppVersion, req.IpAddress);
+    db.TouchDeviceSeen(id, req.ConfigVersion);
+    // 心跳量大：按「事件+设备」60 秒合并成一条，避免日志表被写爆
+    audit.Log(ctx, AuditLog.Events.DeviceHeartbeat,
+        detail: $"设备 {id} 心跳，IP {req.IpAddress}，配置版本 {req.ConfigVersion}",
+        status: StatusCodes.Status200OK, deviceId: id, throttleKey: id);
     return Results.Ok(new { ok = true });
 });
 
@@ -711,6 +1074,10 @@ app.MapPost("/api/v1/verify-pin", (HttpContext ctx, VerifyPinRequest req) =>
     }
     var ok = !string.IsNullOrWhiteSpace(serverHash) &&
              req.PinHash.Trim().Equals(serverHash, StringComparison.OrdinalIgnoreCase);
+    // 只记录结果，绝不记录 PIN 或其哈希
+    audit.Log(ctx, AuditLog.Events.PinVerify,
+        detail: $"设备 {deviceId} 校验平板管理密码：{(ok ? "通过" : "不通过")}",
+        status: StatusCodes.Status200OK, deviceId: deviceId);
     return Results.Ok(new { ok });
 });
 

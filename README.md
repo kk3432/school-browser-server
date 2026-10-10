@@ -2,17 +2,20 @@
 
 ASP.NET Core 8 Minimal API 服务端：Web 图形化后台生成配置，向安卓平板下发带 RSA 签名的配置，管理设备与版本。数据存于本地 SQLite，Windows Server 优先、兼容 Linux。
 
-当前版本：**v0.7.2**（安装器修复版）
+当前版本：**v0.8.0**（日志 / 内置 HTML 页 / 首页实时图表）
 
 ## 功能
 
-- **分级菜单后台**：配置管理 / 设备管理 / 版本历史 / 系统设置 四个标签页，切换带淡入淡出过渡动画
+- **分级菜单后台**：首页 / 配置管理 / 设备管理 / HTML 页 / 操作日志 / 版本历史 / 系统设置，切换带淡入淡出过渡动画
+- **首页实时概览（v0.8.0）**：当前在线设备数、设备总数、离线数、**在线设备占比环形图**，以及**今日 00:00 起的在线设备折线图**（服务端每 5 秒采样一次，页面 1 秒刷新一次；采样点保留 7 天）
+- **操作日志（v0.8.0）**：记录登录 IP/时间/结果（成功、失败、被限频）、管理操作（发布/回滚配置、改安全设置、查看照片、导出 CSV、增删 HTML 页）与设备注册/心跳（同类事件 60 秒合并计数）；后台可按事件/时间/关键词筛选、分页、导出 CSV；保留 90 天，写入走内存队列异步落库，不影响接口响应
+- **内置 HTML 页（v0.8.0）**：后台在线编辑静态 HTML，服务端以 `http://服务器IP:端口/h/页面片段` 公开托管；把该地址写进快捷书签即可在受管平板上打开；HTML 正文不下发到配置（配置只带名称与地址），并自动补 `X-Content-Type-Options` / `Referrer-Policy` 响应头
 - Web 图形化后台：首页、白/黑名单、教师快捷书签、轮询间隔、6 位平板管理密码、隐藏入口开关、截屏限制、可唤醒应用白名单、启动拍照开关
 - **规则支持端口精确匹配**：`host` 匹配任意端口、`host:8080` 匹配指定端口；匹配不区分 http/https
 - 配置版本管理：发布、历史版本、一键回滚（回滚生成新版本号，终端必收到）
 - 设备管理：显示每台设备当前 IP（自动更新）、在线/离线状态、最近启动拍照、最近输错密码拍照（最近 10 分钟内输错的设备行标红告警）
 - **设备状态筛选**：按 全部/在线/离线 过滤 + 按 ID/名称/IP 关键词搜索
-- **设备列表自动刷新**：支持关闭 / 1 秒 / 5 秒自动刷新设备状态
+- **设备列表自动刷新**：默认 **1 秒/次**，可选关闭 / 1 秒 / 5 秒，选择会被记住（v0.8.0 起默认 1 秒）
 - **设备列表 CSV 导出**：可勾选导出列、可按最后上线时间段筛选、可导出全部设备
 - **PIN 服务端校验**：平板把密码 MD5 哈希发到服务端校验（不再本地比对），接口每设备每分钟限 5 次
 - **登录安全加固（v0.7.1）**：登录接口每 IP 每分钟限 5 次（429）；用户名不存在与密码错误返回完全一致的提示，杜绝用户名枚举
@@ -41,7 +44,9 @@ dotnet run
 ├── CampusBrowser.Server.csproj
 ├── Models/AppConfig.cs     # 配置结构与请求模型
 ├── Services/
-│   ├── Database.cs         # SQLite：设置/版本/设备/令牌（全参数化查询）
+│   ├── Database.cs         # SQLite：设置/版本/设备/令牌/日志/HTML页/在线采样（全参数化查询）
+│   ├── AuditLog.cs         # 操作日志：内存队列 + 后台落库 + 高频事件节流合并
+│   ├── OnlineSampler.cs    # 在线采样后台服务（每 5 秒一次，供首页全天曲线）
 │   ├── Security.cs         # 后台密码 PBKDF2-SHA256、平板 PIN 哈希
 │   └── Signer.cs           # RSA-2048 配置签名
 ├── wwwroot/                # Web 管理后台（原生 HTML/JS，无需构建）
@@ -60,7 +65,7 @@ dotnet publish CampusBrowser.Server.csproj -c Release -r win-x64 \
   --self-contained true -o installer/publish/win-x64
 
 # 2. 用 NSIS 编译安装包（Linux 下 makensis 可用）
-makensis -DAPP_VERSION=0.7.2 installer/campus-browser-server.nsi
+makensis -DAPP_VERSION=0.8.0 installer/campus-browser-server.nsi
 # 输出 installer/CampusBrowserServer-setup.exe
 # 若在中文 Windows 上编译，追加 -INPUTCHARSET UTF8，避免无 BOM 脚本按 ACP 解析导致中文乱码
 ```
@@ -83,9 +88,10 @@ dotnet publish CampusBrowser.Server.csproj -c Release -r linux-x64 \
 | GET | `/api/v1/config?device_id=xxx` | 拉当前配置；版本号在 `X-Config-Version`，签名在 `X-Signature` |
 | POST | `/api/v1/devices/register` | 设备注册（上报名称、版本、IP） |
 | POST | `/api/v1/devices/heartbeat` | 心跳上报 |
-| POST | `/api/v1/photo` | 照片上报（type=startup 启动拍照 / wrong_pin 输错密码拍照） |
+| POST | `/api/v1/photo` | 照片上报（type=startup 启动拍照 / wrong_pin 输错密码拍照）；v0.7.3 起不再按设备限频 |
 | POST | `/api/v1/verify-pin` | PIN 哈希服务端校验（每分钟限 5 次，429） |
 | GET | `/api/v1/public-key` | 获取签名公钥 |
+| GET | `/h/{slug}` | 内置 HTML 页（v0.8.0，公开只读，可直接加进书签） |
 
 **管理端（需 `Authorization: Bearer <token>`）**
 
@@ -97,8 +103,14 @@ dotnet publish CampusBrowser.Server.csproj -c Release -r linux-x64 \
 | GET | `/api/admin/devices` | 设备列表（含 IP、在线状态、拍照时间） |
 | GET | `/api/admin/devices/export.csv` | 设备列表 CSV 导出（可选列、可选时间段） |
 | GET | `/api/admin/photo?deviceId=&file=&type=` | 查看设备照片（type=startup/wrong_pin） |
-| GET/POST | `/api/admin/security` | 读取 / 更新安全设置（UA 强制校验开关） |
+| GET | `/api/admin/security` | 读取 / 更新安全设置（UA 强制校验开关） |
 | GET | `/api/admin/public-key` | 查看公钥（内置到 APP） |
+| GET | `/api/admin/stats/overview` | 首页概览（v0.8.0）：在线/离线/总数/占比 + 今日 00:00 起在线采样点 |
+| GET | `/api/admin/html-pages` | 内置 HTML 页列表（含访问地址与体积） |
+| POST | `/api/admin/html-pages` | 新建 / 更新 HTML 页（id=0 为新建，slug 冲突即更新） |
+| DELETE | `/api/admin/html-pages/{id}` | 删除 HTML 页 |
+| GET | `/api/admin/logs` | 操作日志查询（v0.8.0：event/from/to/q/limit/offset，from/to 支持 Unix 秒或 ISO） |
+| GET | `/api/admin/logs/export.csv` | 操作日志 CSV 导出（UTF-8 BOM） |
 
 ## 配置字段
 
@@ -113,6 +125,7 @@ dotnet publish CampusBrowser.Server.csproj -c Release -r linux-x64 \
 | `block_screenshot` | 是否全局禁止截屏/录屏 |
 | `update_interval_seconds` | APP 轮询间隔（30~86400） |
 | `require_startup_photo` | 是否要求平板启动时拍前置照片上传（默认 false） |
+| `html_pages` | 内置 HTML 页 `[{slug,title}]`（v0.8.0，正文不下发，页面由 `/h/{slug}` 提供） |
 | `admin_pin_hash` | 平板 6 位管理密码哈希（v0.7.1 起不下发给 APP，仅服务端校验用） |
 
 ## 安全说明
@@ -125,6 +138,8 @@ dotnet publish CampusBrowser.Server.csproj -c Release -r linux-x64 \
 - 管理后台所有动态输出经 HTML 转义（v0.4.0 修复存储型 XSS）
 - 响应不暴露 Server 头
 - 配置 RSA-2048 签名，APP 验签失败拒绝使用；下发前剥离 PIN 哈希并重签（v0.7.1）
+- **操作日志不记录敏感内容（v0.8.0）**：只记 IP/时间/事件/结果，绝不记录密码、PIN 哈希与令牌；日志接口与导出均需登录
+- 内置 HTML 页的 slug 走白名单正则（`^[a-z0-9][a-z0-9-]{0,63}$`）杜绝路径穿越，响应带 `X-Content-Type-Options: nosniff` 与 `Referrer-Policy: no-referrer`
 - 内网默认 HTTP，建议生产环境通过 HTTPS 反向代理或启用 TLS
 
 ## 开源协议

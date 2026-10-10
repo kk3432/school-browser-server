@@ -122,3 +122,59 @@ button:active { transform: scale(.97); }
   .device-controls input[type="search"] { width: 100%; }
   .device-controls { flex-direction: column; align-items: stretch; }
 }
+
+/* ===== 首页概览（v0.8.0）：指标卡 / 折线图 / 环形图 ===== */
+.stat-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+.stat-tile {
+  background: linear-gradient(180deg, #f8fbff 0%, #eef4ff 100%);
+  border: 1px solid #e2e8f0; border-radius: 12px; padding: 16px 14px; text-align: center;
+}
+.stat-num { font-size: 30px; font-weight: 700; color: #1b7ae0; line-height: 1.2; }
+.stat-label { font-size: 12.5px; color: #64748b; margin-top: 4px; }
+
+.chart-box { width: 100%; overflow: hidden; }
+#chart-line { width: 100%; height: 260px; display: block; }
+
+.donut-wrap { display: flex; align-items: center; gap: 28px; flex-wrap: wrap; }
+#chart-donut { width: 240px; height: 240px; flex-shrink: 0; }
+.donut-legend { font-size: 13.5px; line-height: 2; color: #334155; }
+.donut-legend .dot {
+  display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 8px;
+}
+.dot-online { background: #1b7ae0; }
+.dot-offline { background: #cbd5e1; }
+.donut-legend .muted { max-width: 320px; line-height: 1.6; }
+
+@media (max-width: 760px) {
+  .stat-row { grid-template-columns: repeat(2, 1fr); }
+}
+
+/* ===== HTML 页编辑器（v0.8.0） ===== */
+.html-layout { display: grid; grid-template-columns: 260px 1fr; gap: 18px; align-items: start; }
+.html-list-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+#html-list { display: flex; flex-direction: column; gap: 6px; max-height: 420px; overflow-y: auto; }
+.html-item {
+  border: 1px solid #e2e8f0; border-radius: 8px; padding: 9px 11px; cursor: pointer;
+  background: #fff; transition: background .15s ease, border-color .15s ease;
+}
+.html-item:hover { background: #f1f5f9; }
+.html-item.active { border-color: #2563eb; background: #eff6ff; }
+.html-item .t { font-weight: 600; font-size: 13.5px; color: #0f172a; }
+.html-item .s { font-size: 12px; color: #64748b; word-break: break-all; }
+#html-body { min-height: 320px; line-height: 1.5; }
+.html-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+.html-actions .ghost { margin-left: 0; }
+.ghost.danger { border-color: #fecaca; color: #b91c1c; }
+.ghost.danger:hover { background: #fef2f2; }
+.html-picker { display: flex; flex-direction: column; gap: 6px; margin: 6px 0 4px; }
+.html-picker label { flex-direction: row; align-items: center; gap: 8px; font-size: 13px; }
+.html-picker code { font-size: 12px; color: #64748b; }
+
+/* ===== 操作日志分页（v0.8.0） ===== */
+.pager { display: flex; align-items: center; gap: 12px; margin-top: 12px; }
+#tbl-logs td { font-size: 12.5px; }
+#tbl-logs td.detail { max-width: 360px; word-break: break-word; }
+
+@media (max-width: 900px) {
+  .html-layout { grid-template-columns: 1fr; }
+}

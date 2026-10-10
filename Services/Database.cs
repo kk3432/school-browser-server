@@ -62,6 +62,35 @@ public class Database
                 created_at TEXT NOT NULL,
                 expires_at INTEGER NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS logs(
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts         TEXT NOT NULL,
+                event      TEXT NOT NULL,
+                ip         TEXT,
+                actor      TEXT,
+                device_id  TEXT,
+                method     TEXT,
+                path       TEXT,
+                status     INTEGER,
+                detail     TEXT,
+                user_agent TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_logs_ts    ON logs(ts);
+            CREATE INDEX IF NOT EXISTS idx_logs_event ON logs(event);
+            CREATE INDEX IF NOT EXISTS idx_logs_ip    ON logs(ip);
+            CREATE TABLE IF NOT EXISTS html_pages(
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                slug       TEXT NOT NULL UNIQUE,
+                title      TEXT NOT NULL DEFAULT '',
+                html       TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS online_samples(
+                ts     INTEGER PRIMARY KEY,
+                online INTEGER NOT NULL,
+                total  INTEGER NOT NULL
+            );
             """;
         cmd.ExecuteNonQuery();
 
@@ -309,6 +338,15 @@ public class Database
         return reader.Read() ? ReadDevice(reader) : null;
     }
 
+    /// <summary>设备总数（首页概览指标）。</summary>
+    public long CountDevices()
+    {
+        using var conn = Open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = "SELECT COUNT(*) FROM devices;";
+        return Convert.ToInt64(cmd.ExecuteScalar() ?? 0L);
+    }
+
     private static DeviceRow ReadDevice(SqliteDataReader reader) => new(
         reader.GetString(0),
         reader.IsDBNull(1) ? "" : reader.GetString(1),
@@ -352,6 +390,254 @@ public class Database
         cmd.Parameters.AddWithValue("$at", at);
         cmd.Parameters.AddWithValue("$id", deviceId);
         cmd.ExecuteNonQuery();
+    }
+
+    // ---------- 操作日志（v0.8.0） ----------
+
+    /// <summary>写入一条操作日志；失败不抛（日志不能影响主流程）。</summary>
+    public void InsertLog(LogRow row)
+    {
+        try
+        {
+            using var conn = Open();
+            using var cmd = conn.CreateCommand();
+            cmd.CommandText = """
+                INSERT INTO logs(ts, event, ip, actor, device_id, method, path, status, detail, user_agent)
+                VALUES($ts, $ev, $ip, $ac, $dev, $m, $p, $st, $dt, $ua);
+                """;
+            cmd.Parameters.AddWithValue("$ts", row.Ts);
+            cmd.Parameters.AddWithValue("$ev", row.Event);
+            cmd.Parameters.AddWithValue("$ip", row.Ip ?? "");
+            cmd.Parameters.AddWithValue("$ac", row.Actor ?? "");
+            cmd.Parameters.AddWithValue("$dev", row.DeviceId ?? "");
+            cmd.Parameters.AddWithValue("$m", row.Method ?? "");
+            cmd.Parameters.AddWithValue("$p", row.Path ?? "");
+            cmd.Parameters.AddWithValue("$st", row.Status);
+            cmd.Parameters.AddWithValue("$dt", row.Detail ?? "");
+            cmd.Parameters.AddWithValue("$ua", row.UserAgent ?? "");
+            cmd.ExecuteNonQuery();
+        }
+        catch
+        {
+            // 忽略：日志写入失败不得影响业务响应
+        }
+    }
+
+    /// <summary>
+    /// 查询操作日志（倒序，分页）。
+    /// from/to 为 UTC 时刻的 Unix 秒（按 ts 文本时间过滤，含边界）。
+    /// </summary>
+    public List<LogRow> QueryLogs(DateTimeOffset? from, DateTimeOffset? to, string? evt, string? keyword, int limit, int offset)
+    {
+        var result = new List<LogRow>();
+        using var conn = Open();
+        using var cmd = conn.CreateCommand();
+        var where = new List<string>();
+        if (from is not null)
+        {
+            where.Add("ts >= $from");
+            cmd.Parameters.AddWithValue("$from", from.Value.ToString("yyyy-MM-dd HH:mm:ss zzz"));
+        }
+        if (to is not null)
+        {
+            where.Add("ts <= $to");
+            cmd.Parameters.AddWithValue("$to", to.Value.ToString("yyyy-MM-dd HH:mm:ss zzz"));
+        }
+        if (!string.IsNullOrWhiteSpace(evt) && evt != "all")
+        {
+            where.Add("event = $ev");
+            cmd.Parameters.AddWithValue("$ev", evt);
+        }
+        if (!string.IsNullOrWhiteSpace(keyword))
+        {
+            where.Add("(ip LIKE $kw OR actor LIKE $kw OR device_id LIKE $kw OR detail LIKE $kw OR path LIKE $kw)");
+            cmd.Parameters.AddWithValue("$kw", "%" + keyword.Trim() + "%");
+        }
+        var sql = "SELECT id, ts, event, ip, actor, device_id, method, path, status, detail, user_agent FROM logs";
+        if (where.Count > 0) sql += " WHERE " + string.Join(" AND ", where);
+        sql += " ORDER BY id DESC LIMIT $lim OFFSET $off;";
+        cmd.CommandText = sql;
+        cmd.Parameters.AddWithValue("$lim", Math.Clamp(limit, 1, 2000));
+        cmd.Parameters.AddWithValue("$off", Math.Max(offset, 0));
+        using var reader = cmd.ExecuteReader();
+        while (reader.Read()) result.Add(ReadLog(reader));
+        return result;
+    }
+
+    /// <summary>符合条件的日志总条数（后台分页用）。</summary>
+    public long CountLogs(DateTimeOffset? from, DateTimeOffset? to, string? evt, string? keyword)
+    {
+        using var conn = Open();
+        using var cmd = conn.CreateCommand();
+        var where = new List<string>();
+        if (from is not null)
+        {
+            where.Add("ts >= $from");
+            cmd.Parameters.AddWithValue("$from", from.Value.ToString("yyyy-MM-dd HH:mm:ss zzz"));
+        }
+        if (to is not null)
+        {
+            where.Add("ts <= $to");
+            cmd.Parameters.AddWithValue("$to", to.Value.ToString("yyyy-MM-dd HH:mm:ss zzz"));
+        }
+        if (!string.IsNullOrWhiteSpace(evt) && evt != "all")
+        {
+            where.Add("event = $ev");
+            cmd.Parameters.AddWithValue("$ev", evt);
+        }
+        if (!string.IsNullOrWhiteSpace(keyword))
+        {
+            where.Add("(ip LIKE $kw OR actor LIKE $kw OR device_id LIKE $kw OR detail LIKE $kw OR path LIKE $kw)");
+            cmd.Parameters.AddWithValue("$kw", "%" + keyword.Trim() + "%");
+        }
+        var sql = "SELECT COUNT(*) FROM logs";
+        if (where.Count > 0) sql += " WHERE " + string.Join(" AND ", where);
+        cmd.CommandText = sql;
+        return Convert.ToInt64(cmd.ExecuteScalar() ?? 0L);
+    }
+
+    /// <summary>导出用：按条件取全部匹配日志（上限 5 万条防内存爆）。</summary>
+    public List<LogRow> QueryLogsForExport(DateTimeOffset? from, DateTimeOffset? to, string? evt, string? keyword) =>
+        QueryLogs(from, to, evt, keyword, 50000, 0);
+
+    /// <summary>删除早于 keepDays 天的日志，返回删除条数。调用方按天惰性触发。</summary>
+    public int PurgeOldLogs(int keepDays)
+    {
+        if (keepDays <= 0) return 0;
+        using var conn = Open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = "DELETE FROM logs WHERE ts < $before;";
+        cmd.Parameters.AddWithValue("$before", DateTimeOffset.Now.AddDays(-keepDays).ToString("yyyy-MM-dd HH:mm:ss zzz"));
+        return cmd.ExecuteNonQuery();
+    }
+
+    private static LogRow ReadLog(SqliteDataReader r) => new(
+        r.GetInt64(0), r.GetString(1), r.GetString(2),
+        r.IsDBNull(3) ? "" : r.GetString(3),
+        r.IsDBNull(4) ? "" : r.GetString(4),
+        r.IsDBNull(5) ? "" : r.GetString(5),
+        r.IsDBNull(6) ? "" : r.GetString(6),
+        r.IsDBNull(7) ? "" : r.GetString(7),
+        r.IsDBNull(8) ? 0 : r.GetInt32(8),
+        r.IsDBNull(9) ? "" : r.GetString(9),
+        r.IsDBNull(10) ? "" : r.GetString(10));
+
+    // ---------- HTML 页（v0.8.0） ----------
+
+    public List<HtmlPageRow> ListHtmlPages()
+    {
+        var result = new List<HtmlPageRow>();
+        using var conn = Open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = "SELECT id, slug, title, html, created_at, updated_at FROM html_pages ORDER BY id DESC;";
+        using var reader = cmd.ExecuteReader();
+        while (reader.Read()) result.Add(ReadHtmlPage(reader));
+        return result;
+    }
+
+    public HtmlPageRow? GetHtmlPage(string slug)
+    {
+        using var conn = Open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = "SELECT id, slug, title, html, created_at, updated_at FROM html_pages WHERE slug=$s;";
+        cmd.Parameters.AddWithValue("$s", slug);
+        using var reader = cmd.ExecuteReader();
+        return reader.Read() ? ReadHtmlPage(reader) : null;
+    }
+
+    public HtmlPageRow? GetHtmlPageById(long id)
+    {
+        using var conn = Open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = "SELECT id, slug, title, html, created_at, updated_at FROM html_pages WHERE id=$id;";
+        cmd.Parameters.AddWithValue("$id", id);
+        using var reader = cmd.ExecuteReader();
+        return reader.Read() ? ReadHtmlPage(reader) : null;
+    }
+
+    /// <summary>保存 HTML 页（id=0 为新建，slug 冲突返回 false）。</summary>
+    public bool SaveHtmlPage(long id, string slug, string title, string html)
+    {
+        using var conn = Open();
+        using var cmd = conn.CreateCommand();
+        if (id > 0)
+        {
+            cmd.CommandText = """
+                UPDATE html_pages SET slug=$s, title=$t, html=$h, updated_at=$u WHERE id=$id;
+                """;
+            cmd.Parameters.AddWithValue("$id", id);
+        }
+        else
+        {
+            cmd.CommandText = """
+                INSERT INTO html_pages(slug, title, html, created_at, updated_at) VALUES($s, $t, $h, $u, $u);
+                """;
+        }
+        cmd.Parameters.AddWithValue("$s", slug);
+        cmd.Parameters.AddWithValue("$t", title);
+        cmd.Parameters.AddWithValue("$h", html);
+        cmd.Parameters.AddWithValue("$u", Now());
+        try
+        {
+            return cmd.ExecuteNonQuery() > 0;
+        }
+        catch (SqliteException)
+        {
+            return false; // slug 唯一约束冲突
+        }
+    }
+
+    public bool DeleteHtmlPage(long id)
+    {
+        using var conn = Open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = "DELETE FROM html_pages WHERE id=$id;";
+        cmd.Parameters.AddWithValue("$id", id);
+        return cmd.ExecuteNonQuery() > 0;
+    }
+
+    private static HtmlPageRow ReadHtmlPage(SqliteDataReader r) => new(
+        r.GetInt64(0), r.GetString(1), r.GetString(2), r.GetString(3), r.GetString(4), r.GetString(5));
+
+    // ---------- 在线采样（v0.8.0，首页全天曲线） ----------
+
+    /// <summary>写入一个采样点；同一秒重复采样用 REPLACE 覆盖。</summary>
+    public void InsertOnlineSample(long ts, int online, int total)
+    {
+        using var conn = Open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = """
+            INSERT INTO online_samples(ts, online, total) VALUES($ts, $o, $t)
+            ON CONFLICT(ts) DO UPDATE SET online=excluded.online, total=excluded.total;
+            """;
+        cmd.Parameters.AddWithValue("$ts", ts);
+        cmd.Parameters.AddWithValue("$o", online);
+        cmd.Parameters.AddWithValue("$t", total);
+        cmd.ExecuteNonQuery();
+    }
+
+    /// <summary>取 [fromTs, 现在] 的采样点（升序）。</summary>
+    public List<(long Ts, int Online, int Total)> ListOnlineSamples(long fromTs)
+    {
+        var result = new List<(long, int, int)>();
+        using var conn = Open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = "SELECT ts, online, total FROM online_samples WHERE ts >= $from ORDER BY ts ASC;";
+        cmd.Parameters.AddWithValue("$from", fromTs);
+        using var reader = cmd.ExecuteReader();
+        while (reader.Read()) result.Add((reader.GetInt64(0), reader.GetInt32(1), reader.GetInt32(2)));
+        return result;
+    }
+
+    /// <summary>删除早于 keepDays 天的采样点。</summary>
+    public int PurgeOldOnlineSamples(int keepDays)
+    {
+        if (keepDays <= 0) return 0;
+        using var conn = Open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = "DELETE FROM online_samples WHERE ts < $before;";
+        cmd.Parameters.AddWithValue("$before", DateTimeOffset.Now.AddDays(-keepDays).ToUnixTimeSeconds());
+        return cmd.ExecuteNonQuery();
     }
 
     private static string Now() => DateTimeOffset.Now.ToString("yyyy-MM-dd HH:mm:ss zzz");

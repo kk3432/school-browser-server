@@ -62,6 +62,13 @@ public class AppConfig
     [JsonPropertyName("allowed_apps")]
     public List<AllowedAppItem> AllowedApps { get; set; } = new();
 
+    /// <summary>
+    /// 服务端内置 HTML 页（v0.8.0）：随配置下发给 APP 端展示与建立快捷方式。
+    /// 页面本体通过公开地址 http://&lt;服务端&gt;/h/&lt;slug&gt; 下发；APP 端只需把该 URL 加进书签即可打开。
+    /// </summary>
+    [JsonPropertyName("html_pages")]
+    public List<HtmlPageItem> HtmlPages { get; set; } = new();
+
     /// <summary>6 位管理密码的 MD5(密码+盐) 小写十六进制；APP 本地比对。</summary>
     [JsonPropertyName("admin_pin_hash")]
     public string AdminPinHash { get; set; } = "";
@@ -82,6 +89,21 @@ public class AllowedAppItem
     public string Scheme { get; set; } = "";
 }
 
+/// <summary>随配置下发的内置 HTML 页（v0.8.0）。页面本体走公开地址 /h/{slug}，配置里只带元数据。</summary>
+public class HtmlPageItem
+{
+    /// <summary>地址片段，最终地址 http://&lt;服务端&gt;/h/&lt;slug&gt;。</summary>
+    [JsonPropertyName("slug")]
+    public string Slug { get; set; } = "";
+
+    [JsonPropertyName("title")]
+    public string Title { get; set; } = "";
+
+    /// <summary>HTML 正文。仅服务端内部保存/下发页面时使用；配置下发前会被剥离以控制体积。</summary>
+    [JsonPropertyName("html")]
+    public string Html { get; set; } = "";
+}
+
 /// <summary>首次启动初始化向导请求。</summary>
 public class SetupRequest
 {
@@ -100,6 +122,8 @@ public class SetupRequest
     public bool RequireStartupPhoto { get; set; }
     public List<AllowedAppItem> AllowedApps { get; set; } = new();
     public string AdminPin { get; set; } = "";
+    /// <summary>内置 HTML 页（v0.8.0）：随配置一起下发，APP 端可据此建立书签/快捷方式。</summary>
+    public List<HtmlPageItem> HtmlPages { get; set; } = new();
 }
 
 /// <summary>发布配置请求（Web 表单）。</summary>
@@ -120,6 +144,8 @@ public class PublishRequest
     /// <summary>6 位管理密码；留空表示沿用原密码。</summary>
     public string AdminPin { get; set; } = "";
     public string Note { get; set; } = "";
+    /// <summary>内置 HTML 页（v0.8.0）：随配置一起下发，APP 端可据此建立书签/快捷方式。</summary>
+    public List<HtmlPageItem> HtmlPages { get; set; } = new();
 }
 
 public class LoginRequest
@@ -155,6 +181,31 @@ public class DeviceRequest
 public record VersionRow(string Version, string ConfigJson, string Signature, string PublishedAt, string? Note);
 
 public record DeviceRow(string DeviceId, string Name, string AppVersion, string ConfigVersion, string IpAddress, string RegisteredAt, string LastSeen, string? LastPhotoAt, string? PhotoSkipReason, string? LastWrongPinPhotoAt);
+
+/// <summary>操作日志行（v0.8.0）。</summary>
+public record LogRow(long Id, string Ts, string Event, string Ip, string Actor, string DeviceId,
+    string Method, string Path, int Status, string Detail, string UserAgent);
+
+/// <summary>服务端下发的 HTML 页（v0.8.0，作为书签/快捷方式打开的静态页面）。</summary>
+public record HtmlPageRow(long Id, string Slug, string Title, string Html, string CreatedAt, string UpdatedAt);
+
+/// <summary>保存在线采样点（v0.8.0，首页全天折线图）。</summary>
+public record OnlineSampleRow(long Ts, int Online, int Total);
+
+/// <summary>HTML 页保存请求（后台编辑器）。</summary>
+public class HtmlPageRequest
+{
+    /// <summary>0 或省略 = 新建；>0 = 更新既有记录。</summary>
+    public long Id { get; set; }
+
+    /// <summary>URL 片段，最终地址为 http://<服务端>/h/<slug>；仅允许小写字母数字与短横线。</summary>
+    public string Slug { get; set; } = "";
+
+    public string Title { get; set; } = "";
+
+    /// <summary>HTML 正文（服务端原样下发）。</summary>
+    public string Html { get; set; } = "";
+}
 
 /// <summary>教师快捷书签名目。</summary>
 public class BookmarkItem
