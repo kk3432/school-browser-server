@@ -28,8 +28,15 @@ const int RegisterMaxHits = 20;
 // 登录令牌有效期（v0.7.1，L3）：6 小时，每次有效请求滑动续期
 const long TokenTtlSeconds = 6 * 60 * 60;
 
-// APP 接口 UA 校验（v0.7.0）：合法 UA 必须包含的标记
+// APP 接口 UA 校验（v0.7.0 引入开关，v0.8.3 起常开强制）：合法 UA 必须包含的标记
 const string AppUaMarker = "OkHttp/";
+
+// 管理后台页面 CSP（v0.8.3）：只加在管理后台自己的 HTML 上。
+// /h/{slug} 是教师自编页面，不加 CSP（否则会破坏页面本身）。
+// style-src 保留 'unsafe-inline'：现有表格行/内联样式仍靠 style 属性（后续可收紧到纯 'self'）。
+const string AdminCsp =
+    "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; " +
+    "img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'";
 
 // 在线采样（v0.8.0）：首页全天折线图的数据源，每 5 秒采一次（1 秒前端刷新仍平滑）
 const int OnlineSampleSeconds = 5;
@@ -177,6 +184,28 @@ if (string.IsNullOrEmpty(db.GetSetting("rsa_private")))
     db.SetSetting("rsa_public", pub);
 }
 
+// 平板管理密码迁移（v0.8.3）：v0.8.2 及更早把 admin_pin_hash 存在配置版本 JSON 里，
+// 于是发布/回滚配置会连带改动或还原密码。现在改存 settings 表（键 admin_pin_hash），
+// 配置发布/回滚完全不碰密码。这里做一次性迁移，幂等，重启不覆盖已有密码。
+if (string.IsNullOrEmpty(db.GetSetting("admin_pin_hash")))
+{
+    try
+    {
+        var legacy = db.GetCurrentVersion()?.ConfigJson;
+        if (legacy is not null)
+        {
+            using var legacyDoc = JsonDocument.Parse(legacy);
+            if (legacyDoc.RootElement.TryGetProperty("admin_pin_hash", out var legacyPin) &&
+                !string.IsNullOrWhiteSpace(legacyPin.GetString()))
+                db.SetSetting("admin_pin_hash", legacyPin.GetString()!);
+        }
+    }
+    catch
+    {
+        // 历史配置 JSON 异常不影响启动；密码缺失时校验一律不通过
+    }
+}
+
 // 性能打点中间件（v0.8.2）：只挂在 /api 下，统计每个路由的耗时与响应字节。
 // 用 CountingStream 包一层 Response.Body，不缓冲、不改内容；非 /api 请求直接放行，零额外开销。
 var perf = app.Services.GetRequiredService<PerfStats>();
@@ -282,7 +311,26 @@ app.MapPost("/api/admin/diag/seed", (HttpContext ctx, int? devices, int? samples
 });
 
 app.UseDefaultFiles();
-app.UseStaticFiles();
+// 静态资源安全响应头（v0.8.3）：
+//  - 管理后台的 HTML/JS 一律 no-store，升级覆盖安装后绝不会用到旧脚本/旧壳
+//  - 只给管理后台自己的 .html 加 CSP 与防嵌套/防 Referer 头；
+//    /h/{slug}（教师自编页）与图片/CSS 不受影响
+app.UseStaticFiles(new StaticFileOptions
+{
+    OnPrepareResponse = staticCtx =>
+    {
+        var headers = staticCtx.Context.Response.Headers;
+        var ext = Path.GetExtension(staticCtx.File.Name).ToLowerInvariant();
+        headers["Cache-Control"] = ext is ".html" or ".js" ? "no-store" : "no-cache";
+        headers["X-Content-Type-Options"] = "nosniff";
+        if (ext == ".html")
+        {
+            headers["X-Frame-Options"] = "DENY";
+            headers["Referrer-Policy"] = "no-referrer";
+            headers["Content-Security-Policy"] = AdminCsp;
+        }
+    }
+});
 
 // 登录审计（v0.8.0）：把 /api/login 的响应体缓冲下来，读取状态码后再原样写回。
 // 只缓冲这一条短 JSON 响应，不读取/不记录请求体中的密码。
@@ -338,15 +386,12 @@ bool IsAdmin(HttpContext ctx) => db.TokenValid(TokenFrom(ctx), TokenTtlSeconds);
 string AuditActor() => db.GetSetting("admin_user") ?? "";
 
 /// <summary>
-/// APP 接口 UA 校验（v0.7.0）：后台开关 ua_check_enabled 开启时，请求 UA 必须含 OkHttp/，否则 403。
-/// 开关默认关闭，等所有终端升级到 v0.7.0 后再由管理员在后台开启。
+/// APP 接口 UA 校验（v0.8.3：常开强制，不再有后台开关）。
+/// 请求 UA 必须含 OkHttp/（APP 端用 OkHttp 发请求）；否则 403 非法客户端。
+/// 注意：/h/{slug} 是平板 WebView 打开的页面（WebView UA），不受此校验影响。
 /// </summary>
-bool AppUaValid(HttpContext ctx)
-{
-    var enabled = db.GetSetting("ua_check_enabled") == "true";
-    if (!enabled) return true;
-    return ctx.Request.Headers.UserAgent.ToString().Contains(AppUaMarker, StringComparison.Ordinal);
-}
+bool AppUaValid(HttpContext ctx) =>
+    ctx.Request.Headers.UserAgent.ToString().Contains(AppUaMarker, StringComparison.Ordinal);
 
 List<string> ParseRules(string? text) =>
     (text ?? string.Empty)
@@ -432,7 +477,7 @@ static string EventLabel(string evt) => evt switch
     "logout" => "退出登录",
     "config_publish" => "发布配置",
     "config_rollback" => "回滚配置",
-    "security_update" => "修改安全设置",
+    "pin_update" => "修改平板密码",
     "html_save" => "保存 HTML 页",
     "html_delete" => "删除 HTML 页",
     "view_photo" => "查看设备照片",
@@ -454,7 +499,7 @@ var EventCatalog = new (string Value, string Label)[]
     ("setup_init", "系统初始化"),
     ("config_publish", "发布配置"),
     ("config_rollback", "回滚配置"),
-    ("security_update", "修改安全设置"),
+    ("pin_update", "修改平板密码"),
     ("html_save", "保存 HTML 页"),
     ("html_delete", "删除 HTML 页"),
     ("view_photo", "查看设备照片"),
@@ -465,7 +510,7 @@ var EventCatalog = new (string Value, string Label)[]
 };
 
 AppConfig BuildConfig(string title, string homeUrl, string fallbackUrl, string mode, string rules,
-    List<BookmarkItem>? bookmarks, int interval, bool kiosk, string? pinHash,
+    List<BookmarkItem>? bookmarks, int interval, bool kiosk,
     bool hiddenEntryEnabled, bool blockScreenshot, bool requireStartupPhoto,
     List<AllowedAppItem>? allowedApps, List<HtmlPageItem>? htmlPages = null) => new()
 {
@@ -483,8 +528,7 @@ AppConfig BuildConfig(string title, string homeUrl, string fallbackUrl, string m
     BlockScreenshot = blockScreenshot,
     RequireStartupPhoto = requireStartupPhoto,
     AllowedApps = NormalizeAllowedApps(allowedApps),
-    HtmlPages = NormalizeHtmlPages(htmlPages),
-    AdminPinHash = pinHash ?? ""
+    HtmlPages = NormalizeHtmlPages(htmlPages)
 };
 
 (string Json, string Signature) SerializeAndSign(AppConfig config)
@@ -549,10 +593,12 @@ app.MapPost("/api/setup", (SetupRequest req, HttpContext ctx) =>
 
     db.SetSetting("admin_user", req.Username.Trim());
     db.SetSetting("admin_pwd_hash", AdminPassword.Hash(req.Password));
+    // v0.8.3：平板管理密码存 settings 表，不再写进配置 JSON（发布/回滚不会改密码）
+    if (!string.IsNullOrWhiteSpace(req.AdminPin))
+        db.SetSetting("admin_pin_hash", PinHasher.HashPin(req.AdminPin));
 
     var config = BuildConfig(req.Title, req.HomeUrl, req.FallbackUrl, req.Mode, req.Rules,
         req.Bookmarks, req.UpdateIntervalSeconds, req.Kiosk,
-        string.IsNullOrWhiteSpace(req.AdminPin) ? null : PinHasher.HashPin(req.AdminPin),
         req.HiddenEntryEnabled, req.BlockScreenshot, req.RequireStartupPhoto, req.AllowedApps,
         req.HtmlPages);
     config.Version = "1.0.0";
@@ -608,22 +654,13 @@ app.MapGet("/api/admin/config", (HttpContext ctx) =>
 app.MapPost("/api/admin/config/publish", (HttpContext ctx, PublishRequest req) =>
 {
     if (!IsAdmin(ctx)) return Results.Unauthorized();
-    IResult? invalid = ValidateConfigForm(req.HomeUrl, req.AdminPin, req.Bookmarks, req.Rules);
+    IResult? invalid = ValidateConfigForm(req.HomeUrl, null, req.Bookmarks, req.Rules);
     if (invalid is null) invalid = ValidateHtmlPages(req.HtmlPages);
     if (invalid is not null) return invalid;
 
-    var current = db.GetCurrentVersion();
-    string? pinHash = null;
-    if (current is not null)
-    {
-        using var doc = JsonDocument.Parse(current.ConfigJson);
-        if (doc.RootElement.TryGetProperty("admin_pin_hash", out var h)) pinHash = h.GetString();
-    }
-    if (!string.IsNullOrWhiteSpace(req.AdminPin)) pinHash = PinHasher.HashPin(req.AdminPin);
-
     var version = NextVersion();
     var config = BuildConfig(req.Title, req.HomeUrl, req.FallbackUrl, req.Mode, req.Rules,
-        req.Bookmarks, req.UpdateIntervalSeconds, req.Kiosk, pinHash,
+        req.Bookmarks, req.UpdateIntervalSeconds, req.Kiosk,
         req.HiddenEntryEnabled, req.BlockScreenshot, req.RequireStartupPhoto, req.AllowedApps,
         req.HtmlPages);
     config.Version = version;
@@ -960,13 +997,6 @@ app.MapGet("/api/admin/public-key", (HttpContext ctx) =>
     return Results.Ok(new { publicKey = db.GetSetting("rsa_public") });
 });
 
-/// <summary>读取安全设置（UA 校验开关状态）。</summary>
-app.MapGet("/api/admin/security", (HttpContext ctx) =>
-{
-    if (!IsAdmin(ctx)) return Results.Unauthorized();
-    return Results.Ok(new { uaCheckEnabled = db.GetSetting("ua_check_enabled") == "true" });
-});
-
 // ============ 内置 HTML 页（v0.8.0） ============
 // 管理员在后台编辑静态 HTML，平板把 http://<服务端>/h/<slug> 加进书签即可在受管 WebView 中打开。
 
@@ -1053,15 +1083,31 @@ app.MapGet("/h/{slug}", (HttpContext ctx, string slug) =>
     return Results.Text(page.Html, "text/html; charset=utf-8", Encoding.UTF8);
 });
 
-/// <summary>更新安全设置（开启/关闭 APP 请求 UA 强制校验）。</summary>
-app.MapPost("/api/admin/security", (HttpContext ctx, SecuritySettingsRequest req) =>
+/// <summary>
+/// 平板 6 位管理密码（v0.8.3）：存在 settings 表（键 admin_pin_hash），与配置版本完全解耦——发布/回滚配置都不会改动它。
+/// GET 只回「是否已设置」，绝不回哈希（哈希只在服务端 compare，APP 永远拿不到）。
+/// </summary>
+app.MapGet("/api/admin/pin", (HttpContext ctx) =>
 {
     if (!IsAdmin(ctx)) return Results.Unauthorized();
-    db.SetSetting("ua_check_enabled", req.UaCheckEnabled ? "true" : "false");
-    audit.Log(ctx, AuditLog.Events.SecurityUpdate,
-        detail: $"APP 请求 UA 强制校验 → {(req.UaCheckEnabled ? "开启" : "关闭")}",
+    return Results.Ok(new { pinSet = !string.IsNullOrWhiteSpace(db.GetSetting("admin_pin_hash")) });
+});
+
+/// <summary>修改平板管理密码（v0.8.3）：6 位数字，或留空表示保持不变。审计只记「已更新」，绝不记密码。</summary>
+app.MapPost("/api/admin/pin", (HttpContext ctx, SetPinRequest req) =>
+{
+    if (!IsAdmin(ctx)) return Results.Unauthorized();
+    var pin = (req.Pin ?? "").Trim();
+    var pinSet = !string.IsNullOrWhiteSpace(db.GetSetting("admin_pin_hash"));
+    if (pin.Length == 0) return Results.Ok(new { ok = true, changed = false, pinSet });
+    if (pin.Length != 6 || !pin.All(char.IsDigit))
+        return Results.BadRequest(new { error = "管理密码必须是 6 位数字，或留空保持不变" });
+
+    db.SetSetting("admin_pin_hash", PinHasher.HashPin(pin));
+    audit.Log(ctx, AuditLog.Events.PinUpdate,
+        detail: "更新平板管理密码（与配置版本解耦，发布/回滚不会改动）",
         status: StatusCodes.Status200OK, actor: AuditActor());
-    return Results.Ok(new { ok = true, uaCheckEnabled = req.UaCheckEnabled });
+    return Results.Ok(new { ok = true, changed = true, pinSet = true });
 });
 
 // ============ APP 端接口（无需登录令牌） ============
@@ -1206,7 +1252,7 @@ static void CleanupOldPhotos(string dir)
 }
 
 /// <summary>
-/// PIN 服务端校验（v0.7.0）：APP 发送 MD5(pin+盐) 哈希，服务端比对当前配置的 admin_pin_hash。
+/// PIN 服务端校验（v0.7.0）：APP 发送 MD5(pin+盐) 哈希，服务端与 settings 表中的 admin_pin_hash 比对。
 /// 每设备 60 秒窗口限 5 次（429）；device_id 必须已注册；UA 校验与其他 APP 接口一致。
 /// </summary>
 app.MapPost("/api/v1/verify-pin", (HttpContext ctx, VerifyPinRequest req) =>
@@ -1229,13 +1275,8 @@ app.MapPost("/api/v1/verify-pin", (HttpContext ctx, VerifyPinRequest req) =>
         q.Enqueue(nowTicks);
     }
 
-    var currentJson = db.GetCurrentVersion()?.ConfigJson;
-    string? serverHash = null;
-    if (currentJson is not null)
-    {
-        using var doc = JsonDocument.Parse(currentJson);
-        if (doc.RootElement.TryGetProperty("admin_pin_hash", out var h)) serverHash = h.GetString();
-    }
+    // v0.8.3：密码读 settings（键 admin_pin_hash），不再从配置 JSON 取
+    var serverHash = db.GetSetting("admin_pin_hash");
     var ok = !string.IsNullOrWhiteSpace(serverHash) &&
              req.PinHash.Trim().Equals(serverHash, StringComparison.OrdinalIgnoreCase);
     // 只记录结果，绝不记录 PIN 或其哈希
@@ -1245,6 +1286,9 @@ app.MapPost("/api/v1/verify-pin", (HttpContext ctx, VerifyPinRequest req) =>
     return Results.Ok(new { ok });
 });
 
-app.MapGet("/api/v1/public-key", () => Results.Ok(new { publicKey = db.GetSetting("rsa_public") }));
+app.MapGet("/api/v1/public-key", (HttpContext ctx) =>
+    AppUaValid(ctx)
+        ? Results.Ok(new { publicKey = db.GetSetting("rsa_public") })
+        : Results.Json(new { error = "非法客户端" }, statusCode: 403));
 
 app.Run();

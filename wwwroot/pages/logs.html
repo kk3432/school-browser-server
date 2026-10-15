@@ -1,0 +1,36 @@
+<div class="card">
+  <div class="device-toolbar">
+    <h3>操作日志
+      <button id="btn-log-export" class="mini" type="button">导出 CSV</button>
+    </h3>
+    <div class="device-controls">
+      <label class="inline">事件
+        <select id="log-filter-event"></select>
+      </label>
+      <label class="inline">开始<input type="datetime-local" id="log-filter-from"></label>
+      <label class="inline">结束<input type="datetime-local" id="log-filter-to"></label>
+      <input type="search" id="log-filter-keyword" placeholder="IP / 操作人 / 设备 / 详情">
+      <button id="btn-log-query" class="mini">查询</button>
+      <button id="btn-log-reset" class="mini">重置</button>
+      <label class="inline">自动刷新
+        <select id="log-auto-refresh">
+          <option value="0" selected>关闭</option>
+          <option value="5">5 秒/次</option>
+          <option value="10">10 秒/次</option>
+        </select>
+      </label>
+    </div>
+  </div>
+  <p class="muted" id="log-summary">共 0 条</p>
+  <div class="table-scroll">
+    <table id="tbl-logs">
+      <thead><tr><th>时间</th><th>事件</th><th>IP</th><th>操作人</th><th>设备</th><th>方法</th><th>路径</th><th>结果</th><th>详情</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+  <div class="pager">
+    <button id="btn-log-prev" class="mini">上一页</button>
+    <span class="muted" id="log-page">第 1 页</span>
+    <button id="btn-log-next" class="mini">下一页</button>
+  </div>
+</div>

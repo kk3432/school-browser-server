@@ -1,0 +1,30 @@
+<div class="card">
+  <h3>内置 HTML 页</h3>
+  <p class="muted">在这里编辑的页面由服务端托管，地址形如 <code>http://服务器IP:端口/h/页面片段</code>。把该地址加进「配置管理 → 快捷书签」并发布，平板上即可一键打开（白名单模式下会自动放行）。</p>
+  <div class="html-layout">
+    <div class="html-list">
+      <div class="html-list-head">
+        <b>页面列表</b>
+        <button type="button" id="btn-html-new" class="mini">+ 新建</button>
+      </div>
+      <div id="html-list"></div>
+    </div>
+    <div class="html-editor">
+      <label>页面名称（显示用）<input id="html-title" placeholder="如：期末考试安排"></label>
+      <label>地址片段（仅小写字母/数字/短横线）
+        <input id="html-slug" placeholder="如：exam-2026" autocomplete="off"></label>
+      <label>HTML 内容
+        <textarea id="html-body" rows="16" spellcheck="false" placeholder="&lt;!DOCTYPE html&gt;&#10;&lt;html&gt;...&lt;/html&gt;"></textarea>
+      </label>
+      <div class="html-actions">
+        <button id="btn-html-save" class="primary">保存</button>
+        <button id="btn-html-preview" class="ghost">预览</button>
+        <button id="btn-html-copy" class="ghost">复制访问地址</button>
+        <button id="btn-html-delete" class="ghost danger">删除</button>
+        <input type="hidden" id="html-id" value="0">
+      </div>
+      <p class="muted" id="html-url-line">访问地址：—</p>
+      <p id="html-msg" class="msg"></p>
+    </div>
+  </div>
+</div>

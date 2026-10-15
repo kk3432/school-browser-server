@@ -15,25 +15,48 @@ h3 { font-size: 15px; margin-bottom: 10px; }
 .muted { color: #64748b; font-size: 13px; margin: 6px 0 14px; }
 .hidden { display: none !important; }
 
+/* ===== 卡片 ===== */
 .card {
   background: #fff; border: 1px solid #e2e8f0; border-radius: 12px;
   padding: 20px 22px; margin-bottom: 18px; box-shadow: 0 1px 3px rgba(15,23,42,.05);
 }
+.card > :last-child { margin-bottom: 0; }
 .narrow { max-width: 420px; margin: 0 auto; }
 .bar { display: flex; justify-content: space-between; align-items: center; margin: 6px 2px 12px; }
 .bar h2 { margin: 0; }
+/* 卡片内的小节标题（v0.8.3 配置页分组）：左侧一条蓝色标识，与卡片标题区分 */
+.section-title {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 14px; color: #0f172a; margin-bottom: 12px;
+}
+.section-title::before {
+  content: ""; width: 3px; height: 14px; border-radius: 2px; background: #2563eb; flex-shrink: 0;
+}
+.actions-card { background: #f8fbff; }
 
-.grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px 16px; margin-bottom: 14px; }
-label { display: flex; flex-direction: column; font-size: 13px; color: #334155; gap: 5px; }
+/* ===== 表单栅格 ===== */
+.grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px 18px; }
+label { display: flex; flex-direction: column; font-size: 13px; color: #334155; gap: 6px; }
 label.full { grid-column: 1 / -1; }
-label.chk { flex-direction: row; align-items: center; gap: 8px; }
 input, select, textarea {
   font: inherit; font-size: 14px; padding: 8px 10px;
   border: 1px solid #cbd5e1; border-radius: 8px; background: #fff; color: #0f172a;
   width: 100%;
 }
+/* 关键修复（v0.8.3）：复选框/单选钮不受 width:100% 影响，否则会被拉满整格并挤到行尾 */
+input[type="checkbox"], input[type="radio"] { width: auto; flex: 0 0 auto; margin: 0; }
 textarea { resize: vertical; font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12.5px; }
 input:focus, select:focus, textarea:focus { outline: 2px solid #bfdbfe; border-color: #2563eb; }
+input[type="search"] { font-size: 13.5px; }
+
+/* 勾选式字段：整行 [勾选框] 说明文字，说明的第二行用小字灰字 */
+label.chk {
+  flex-direction: row; align-items: flex-start; gap: 9px;
+  font-size: 13.5px; line-height: 1.5; cursor: pointer;
+}
+label.chk input[type="checkbox"] { margin-top: 4px; }
+label.chk span { display: block; }
+label.chk span em { display: block; font-style: normal; color: #64748b; font-size: 12px; }
 
 button {
   font: inherit; font-size: 14px; padding: 9px 18px; border-radius: 8px;
@@ -57,7 +80,7 @@ button {
   background: #fef2f2; color: #b91c1c; cursor: pointer; font-size: 16px; line-height: 1;
 }
 .bm-row .bm-del:hover { background: #fee2e2; }
-.add-bm { padding: 6px 14px; font-size: 13px; }
+.add-bm { padding: 6px 14px; font-size: 13px; margin-left: 0; }
 
 /* 允许唤醒的应用编辑器（显示名 / 包名 / scheme / 删除） */
 .app-editor { display: flex; flex-direction: column; gap: 8px; margin: 6px 0 8px; }
@@ -72,10 +95,14 @@ table { width: 100%; border-collapse: collapse; font-size: 13px; }
 th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid #eef2f7; }
 th { color: #64748b; font-weight: 600; font-size: 12.5px; white-space: nowrap; }
 td code { font-size: 12px; }
+td.nowrap { white-space: nowrap; }
+tr.row-warn { background: #fdecec; }
+.dot-online-text { color: #2e9e5b; font-weight: 700; }
+.dot-offline-text { color: #9aa9ba; }
 /* 宽表格横向滚动，避免列挤压 */
 .table-scroll { overflow-x: auto; }
 .table-scroll table { min-width: 760px; }
-#ta-pubkey { background: #f8fafc; }
+#ta-pubkey { background: #f8fafc; font-size: 12px; }
 
 @media (max-width: 640px) {
   .grid { grid-template-columns: 1fr; }
@@ -94,8 +121,9 @@ td code { font-size: 12px; }
 .tab:hover { background: #f1f5f9; }
 .tab.active { background: #2563eb; color: #fff; }
 
-/* 标签面板淡入淡出过渡 */
-.tab-panel { animation: panel-fade .22s ease; }
+/* 标签面板：默认隐藏，由 js/admin.js 切换 */
+.tab-panel { display: none; animation: panel-fade .22s ease; }
+.tab-panel.active { display: block; }
 @keyframes panel-fade {
   from { opacity: 0; transform: translateY(4px); }
   to { opacity: 1; transform: translateY(0); }
@@ -111,6 +139,11 @@ td code { font-size: 12px; }
 }
 .device-controls .inline select { width: auto; padding: 7px 10px; }
 .device-controls input[type="search"] { width: 220px; }
+.device-toolbar .inline {
+  flex-direction: row; align-items: center; gap: 6px; font-size: 13px;
+}
+.device-toolbar .inline select { width: auto; padding: 7px 10px; }
+.inline-note { margin: 0; font-weight: 400; }
 
 /* ===== 通用过渡动画（v0.7.0）===== */
 .card { transition: box-shadow .18s ease; }
@@ -178,3 +211,26 @@ button:active { transform: scale(.97); }
 @media (max-width: 900px) {
   .html-layout { grid-template-columns: 1fr; }
 }
+
+/* ===== 弹窗（v0.8.3：从 index.html 内联样式改为类） ===== */
+.modal-backdrop {
+  display: none; position: fixed; inset: 0; background: rgba(0,0,0,.4); z-index: 100;
+  align-items: center; justify-content: center; padding: 18px;
+}
+.modal-backdrop.open { display: flex; }
+.modal-box {
+  background: #fff; border-radius: 12px; padding: 20px 22px;
+  max-width: 480px; width: 100%; max-height: 85vh; overflow-y: auto;
+}
+.modal-box h3 { margin-top: 0; }
+.modal-box .muted { margin: 4px 0 10px; }
+.modal-row { display: flex; gap: 8px; margin-bottom: 10px; }
+.modal-columns { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-bottom: 14px; }
+.modal-columns .export-col {
+  flex-direction: row; align-items: center; gap: 6px; cursor: pointer; font-size: 13px;
+}
+.modal-field { margin-bottom: 14px; }
+.modal-label { display: block; margin-bottom: 6px; font-weight: 600; }
+.modal-range { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }
+.modal-actions { display: flex; gap: 8px; justify-content: flex-end; }
+.modal-actions .mini { margin-left: 0; }

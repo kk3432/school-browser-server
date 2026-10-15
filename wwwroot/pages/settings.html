@@ -1,0 +1,21 @@
+<div class="card">
+  <h3 class="section-title">平板管理密码</h3>
+  <p class="muted">6 位数字，平板上进入隐藏管理入口时校验；<b>与配置版本完全解耦</b>——发布或回滚配置都不会改动它。密码哈希只存在服务端，永不下发给平板。</p>
+  <div class="grid">
+    <label>新的 6 位管理密码<input id="set-pin" inputmode="numeric" maxlength="6" placeholder="留空保持不变" autocomplete="off"></label>
+  </div>
+  <p class="muted" id="pin-status">—</p>
+  <button id="btn-save-pin" class="primary">保存密码</button>
+  <p id="pin-msg" class="msg"></p>
+</div>
+
+<div class="card">
+  <h3 class="section-title">APP 请求 UA 强制校验（已固定开启）</h3>
+  <p class="muted">服务端只接受 <code>User-Agent</code> 含 <code>OkHttp/</code> 的客户端访问配置、注册、心跳、拍照、PIN 校验与公钥接口，其他客户端一律返回 403。开关已固定开启且不再提供关闭入口，因此请确保所有平板 APP 版本 ≥ v0.7.0（其请求带 <code>CampusBrowser/版本号 OkHttp/4.12</code>）。</p>
+</div>
+
+<div class="card">
+  <h3 class="section-title">配置签名公钥（内置到 APP）</h3>
+  <p class="muted">把下面内容填入 APP 端 SecurityConfig.SERVER_PUBLIC_KEY_PEM 后重新打包；留空时 APP 仅记录警告不验签（仅限调试）。</p>
+  <textarea id="ta-pubkey" rows="6" readonly></textarea>
+</div>

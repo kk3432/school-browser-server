@@ -52,7 +52,8 @@ public class AuditLog
         public const string Logout = "logout";
         public const string ConfigPublish = "config_publish";
         public const string ConfigRollback = "config_rollback";
-        public const string SecurityUpdate = "security_update";
+        /// <summary>修改平板 6 位管理密码（v0.8.3；原 security_update 已随 UA 开关一起下线）。</summary>
+        public const string PinUpdate = "pin_update";
         public const string HtmlSave = "html_save";
         public const string HtmlDelete = "html_delete";
         public const string ViewPhoto = "view_photo";

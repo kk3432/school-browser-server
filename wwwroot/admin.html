@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>控制台 · 校园浏览器服务端</title>
+  <link rel="icon" href="favicon.ico">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="wrap">
+  <header class="page-header">
+    <img src="logo.png" alt="校园浏览器 logo" class="page-logo">
+    <div>
+      <h1>校园浏览器服务端</h1>
+      <p class="muted">配置总控台 · 表单填写后自动生成配置文件并下发</p>
+    </div>
+  </header>
+
+  <!-- 控制台 -->
+  <section id="screen-dashboard" class="hidden">
+    <div class="bar">
+      <h2>控制台</h2>
+      <div>
+        <button id="btn-reload" class="ghost">刷新</button>
+        <button id="btn-logout" class="ghost">退出登录</button>
+      </div>
+    </div>
+
+    <div class="tabs" role="tablist">
+      <button type="button" class="tab active" data-tab="home" role="tab">首页</button>
+      <button type="button" class="tab" data-tab="config" role="tab">配置管理</button>
+      <button type="button" class="tab" data-tab="devices" role="tab">设备管理</button>
+      <button type="button" class="tab" data-tab="html" role="tab">HTML 页</button>
+      <button type="button" class="tab" data-tab="logs" role="tab">操作日志</button>
+      <button type="button" class="tab" data-tab="versions" role="tab">版本历史</button>
+      <button type="button" class="tab" data-tab="settings" role="tab">系统设置</button>
+    </div>
+
+    <!-- 各标签页片段由 js/admin.js 从 pages/*.html 注入 -->
+    <div id="tab-panels"></div>
+  </section>
+</div>
+
+<!-- 设备 CSV 导出弹窗 -->
+<div id="export-csv-modal" class="modal-backdrop">
+  <div class="modal-box">
+    <h3>导出设备 CSV</h3>
+    <p class="muted">勾选要导出的列；可按最后上线时间筛选，不选则导出全部设备。</p>
+    <div class="modal-row">
+      <button class="mini" id="export-select-all">全选</button>
+      <button class="mini" id="export-select-none">全不选</button>
+    </div>
+    <div id="export-columns" class="modal-columns"></div>
+    <div class="modal-field">
+      <label class="modal-label">按最后上线时间筛选（可选）</label>
+      <div class="modal-range">
+        <input type="datetime-local" id="export-from">
+        <span>至</span>
+        <input type="datetime-local" id="export-to">
+      </div>
+      <label class="chk"><input type="checkbox" id="export-all" checked><span>导出所有设备（忽略时间筛选）</span></label>
+    </div>
+    <div class="modal-actions">
+      <button class="mini" id="export-cancel">取消</button>
+      <button id="export-do" class="primary">导出 CSV</button>
+    </div>
+  </div>
+</div>
+
+<script src="js/core.js"></script>
+<script src="js/pages/home.js"></script>
+<script src="js/pages/config.js"></script>
+<script src="js/pages/devices.js"></script>
+<script src="js/pages/html.js"></script>
+<script src="js/pages/logs.js"></script>
+<script src="js/pages/versions.js"></script>
+<script src="js/pages/settings.js"></script>
+<script src="js/admin.js"></script>
+</body>
+</html>

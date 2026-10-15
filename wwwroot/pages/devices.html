@@ -1,0 +1,30 @@
+<div class="card">
+  <div class="device-toolbar">
+    <h3>在线设备
+      <button id="btn-export-csv" class="mini" type="button">导出 CSV</button>
+    </h3>
+    <div class="device-controls">
+      <label class="inline">状态
+        <select id="device-filter-status">
+          <option value="all">全部</option>
+          <option value="online">在线</option>
+          <option value="offline">离线</option>
+        </select>
+      </label>
+      <input type="search" id="device-filter-keyword" placeholder="搜索 ID / 名称 / IP">
+      <label class="inline">自动刷新
+        <select id="device-auto-refresh">
+          <option value="0">关闭</option>
+          <option value="1">1 秒/次</option>
+          <option value="5" selected>5 秒/次</option>
+        </select>
+      </label>
+    </div>
+  </div>
+  <div class="table-scroll">
+    <table id="tbl-devices">
+      <thead><tr><th>状态</th><th>设备 ID</th><th>名称</th><th>APP 版本</th><th>配置版本</th><th>当前 IP</th><th>注册时间</th><th>最后在线</th><th>最近拍照</th><th>输错拍照</th><th>照片</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+</div>

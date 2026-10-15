@@ -68,10 +68,6 @@ public class AppConfig
     /// </summary>
     [JsonPropertyName("html_pages")]
     public List<HtmlPageItem> HtmlPages { get; set; } = new();
-
-    /// <summary>6 位管理密码的 MD5(密码+盐) 小写十六进制；APP 本地比对。</summary>
-    [JsonPropertyName("admin_pin_hash")]
-    public string AdminPinHash { get; set; } = "";
 }
 
 /// <summary>允许唤醒的其他应用条目。</summary>
@@ -141,8 +137,6 @@ public class PublishRequest
     public bool BlockScreenshot { get; set; } = true;
     public bool RequireStartupPhoto { get; set; }
     public List<AllowedAppItem> AllowedApps { get; set; } = new();
-    /// <summary>6 位管理密码；留空表示沿用原密码。</summary>
-    public string AdminPin { get; set; } = "";
     public string Note { get; set; } = "";
     /// <summary>内置 HTML 页（v0.8.0）：随配置一起下发，APP 端可据此建立书签/快捷方式。</summary>
     public List<HtmlPageItem> HtmlPages { get; set; } = new();
@@ -161,11 +155,14 @@ public class VerifyPinRequest
     public string PinHash { get; set; } = "";
 }
 
-/// <summary>更新服务端安全设置（UA 校验开关，v0.7.0）。</summary>
-public class SecuritySettingsRequest
+/// <summary>
+/// 更新平板 6 位管理密码（v0.8.3）。
+/// 密码存在 settings 表（键 admin_pin_hash），不再随配置版本发布/回滚变化。
+/// </summary>
+public class SetPinRequest
 {
-    /// <summary>是否强制校验 APP 请求 UA 含 OkHttp；默认 false，等全部终端升级后开启。</summary>
-    public bool UaCheckEnabled { get; set; }
+    /// <summary>新的 6 位数字密码；留空表示保持不变。</summary>
+    public string Pin { get; set; } = "";
 }
 
 public class DeviceRequest

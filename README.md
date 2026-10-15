@@ -82,7 +82,7 @@ Services/
   OnlineSampler.cs         在线采样后台服务（每 5 秒，供首页全天曲线）
   Security.cs              PBKDF2 后台密码、平板 PIN 哈希
   Signer.cs                RSA-2048 配置签名
-wwwroot/                   Web 后台（index.html / app.js / styles.css）
+wwwroot/                   Web 后台（index.html 登录 / setup.html 向导 / admin.html 控制台 + pages/ + js/ + styles.css）
 installer/                 NSIS 脚本 + 图标
 data/                      运行后生成（已 gitignore）
 ```
@@ -92,6 +92,8 @@ data/                      运行后生成（已 gitignore）
 ## 接口
 
 **APP / 公开**
+
+> 以下 `/api/v1/*` 强制校验 UA：`User-Agent` 必须含 `OkHttp/`（APP 自带），浏览器/curl 会被 403 拒绝。
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
@@ -118,7 +120,7 @@ data/                      运行后生成（已 gitignore）
 | DELETE | `/api/admin/html-pages/{id}` | 删除 HTML 页 |
 | GET | `/api/admin/logs?event=&from=&to=&q=&limit=&offset=` | 操作日志查询 |
 | GET | `/api/admin/logs/export.csv` | 操作日志导出（UTF-8 BOM） |
-| GET / POST | `/api/admin/security` | UA 强制校验开关 |
+| GET / POST | `/api/admin/pin` | 平板 6 位管理密码：读取状态 / 修改（留空保持不变；与配置版本解耦，发布或回滚都不动它） |
 | GET | `/api/admin/public-key` | 查看公钥 |
 
 ---
@@ -138,13 +140,14 @@ data/                      运行后生成（已 gitignore）
 | `block_screenshot` | 是否禁止截屏/录屏（默认 true） |
 | `require_startup_photo` | 启动是否必须前置拍照（默认 false） |
 | `kiosk` | 全屏锁定 |
-| `admin_pin_hash` | 平板 PIN 哈希（**仅服务端校验用，不下发**） |
+
+> 平板 6 位管理密码**不再属于配置字段**（v0.8.3 起存服务端 `settings` 表，键 `admin_pin_hash`）：发布与回滚配置都不会改动它，也永不下发。
 
 ## 数据表
 
 | 表 | 关键字段 | 保留策略 |
 | --- | --- | --- |
-| `settings` | 键值（管理员哈希、RSA 密钥对、UA 开关） | — |
+| `settings` | 键值（管理员哈希、RSA 密钥对、平板 PIN 哈希） | — |
 | `config_versions` | version / config_json / signature / is_current | 保留最近 50 条列表 |
 | `devices` | device_id / ip_address / last_seen / 拍照时间 | — |
 | `auth_tokens` | token / expires_at | 过期惰性清理 |
@@ -157,6 +160,8 @@ data/                      运行后生成（已 gitignore）
 ## 安全
 
 - 登录限频 5 次/分/IP；用户名不存在与密码错误**响应一致**（防枚举）
+- **APP 请求强制 UA 校验**（v0.8.3 起常开）：`/api/v1/*` 只接受 `User-Agent` 含 `OkHttp/` 的客户端（即 APP ≥ v0.7.0），其余一律 403 `{"error":"非法客户端"}`；`/h/{slug}` 例外（平板 WebView 打开）
+- 后台静态资源带 `Cache-Control: no-store`（.html/.js）+ `X-Content-Type-Options: nosniff`；页面另加 `X-Frame-Options: DENY`、`Referrer-Policy: no-referrer` 与 CSP；后台登录令牌存 `sessionStorage`（关标签页即失效）
 - Token 192 位 CSPRNG，6h TTL + 滑动续期；`/api/logout` 需鉴权
 - 配置 RSA-2048 签名；下发前剥离 `admin_pin_hash` 与 HTML 正文并**重新签名**
 - 全部 SQL 参数化；后台动态输出全部 HTML 转义（已修复存储型 XSS）

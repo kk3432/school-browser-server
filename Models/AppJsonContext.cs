@@ -14,7 +14,7 @@ namespace CampusBrowser.Server.Models;
 [JsonSerializable(typeof(PublishRequest))]
 [JsonSerializable(typeof(LoginRequest))]
 [JsonSerializable(typeof(VerifyPinRequest))]
-[JsonSerializable(typeof(SecuritySettingsRequest))]
+[JsonSerializable(typeof(SetPinRequest))]
 [JsonSerializable(typeof(DeviceRequest))]
 [JsonSerializable(typeof(VersionRow))]
 [JsonSerializable(typeof(DeviceRow))]

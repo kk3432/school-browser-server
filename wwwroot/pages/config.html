@@ -1,0 +1,73 @@
+<div class="card">
+  <h3 class="section-title">门户与访问</h3>
+  <div class="grid">
+    <label>门户标题<input id="f-title"></label>
+    <label>首页网址<input id="f-home" placeholder="https://..."></label>
+    <label>备用网址（打不开时）<input id="f-fallback" placeholder="可选"></label>
+    <label>管控模式
+      <select id="f-mode">
+        <option value="whitelist">白名单（只放行规则内）</option>
+        <option value="blacklist">黑名单（仅拦截规则内）</option>
+      </select>
+    </label>
+    <label>轮询间隔（秒）<input id="f-interval" type="number" min="30"></label>
+    <label class="chk"><input id="f-kiosk" type="checkbox">
+      <span>启用全屏锁定（kiosk）<em>平板进入单应用全屏，返回键不退出浏览器</em></span>
+    </label>
+  </div>
+</div>
+
+<div class="card">
+  <h3 class="section-title">访问规则</h3>
+  <div class="grid">
+    <label class="full">规则（一行一条，支持 域名:端口，如 example.com:8080）
+      <textarea id="f-rules" rows="5"></textarea>
+    </label>
+  </div>
+</div>
+
+<div class="card">
+  <h3 class="section-title">快捷书签</h3>
+  <p class="muted">APP 工具栏书签按钮中展示；白名单模式下自动放行。</p>
+  <div id="f-bookmarks" class="bm-editor"></div>
+  <button type="button" id="btn-f-add-bm" class="ghost add-bm">+ 添加书签</button>
+</div>
+
+<div class="card">
+  <h3 class="section-title">平板限制</h3>
+  <div class="grid">
+    <label class="chk"><input id="f-hidden-entry" type="checkbox" checked>
+      <span>允许平板打开隐藏管理入口<em>Logo 连点 5 次；关闭后仅能由服务器重新开启</em></span>
+    </label>
+    <label class="chk"><input id="f-block-screenshot" type="checkbox" checked>
+      <span>禁止截屏与录屏<em>FLAG_SECURE，开启后平板全局强制</em></span>
+    </label>
+    <label class="chk full"><input id="f-require-photo" type="checkbox">
+      <span>要求平板启动时拍前置照片并上传<em>未授权相机无法进入浏览器</em></span>
+    </label>
+  </div>
+</div>
+
+<div class="card">
+  <h3 class="section-title">内置 HTML 页</h3>
+  <p class="muted">服务端托管，平板上以 <code>http://服务器地址/h/页面片段</code> 打开；勾选后写入配置下发。</p>
+  <div id="f-html-pages" class="html-picker"></div>
+  <p class="muted" id="f-html-hint">还没有 HTML 页，去「HTML 页」标签新建，或直接用它给出的 URL 加进上面的书签列表。</p>
+</div>
+
+<div class="card">
+  <h3 class="section-title">允许唤醒的应用白名单</h3>
+  <p class="muted">包名 / 显示名 / 触发 scheme。APP 工具栏「应用」按钮与网页内 scheme 链接都按此表拉起。</p>
+  <div id="f-apps" class="app-editor"></div>
+  <button type="button" id="btn-f-add-app" class="ghost add-bm">+ 添加应用</button>
+</div>
+
+<div class="card actions-card">
+  <h3 class="section-title">发布</h3>
+  <div class="grid">
+    <label class="full">发布备注（可选）<input id="f-note" placeholder="如：新增教务系统"></label>
+  </div>
+  <p class="muted">平板 6 位管理密码已移到「系统设置」，发布与回滚配置都不会改动它。</p>
+  <button id="btn-publish" class="primary">发布新版本</button>
+  <p id="pub-msg" class="msg"></p>
+</div>

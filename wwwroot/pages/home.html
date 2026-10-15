@@ -1,0 +1,54 @@
+<div class="card">
+  <div class="device-toolbar">
+    <h3>实时概览
+      <span class="muted inline-note" id="home-updated"></span>
+    </h3>
+    <label class="inline">自动刷新
+      <select id="home-auto-refresh">
+        <option value="0">关闭</option>
+        <option value="1">1 秒/次</option>
+        <option value="5" selected>5 秒/次</option>
+        <option value="10">10 秒/次</option>
+      </select>
+    </label>
+  </div>
+  <div class="stat-row">
+    <div class="stat-tile">
+      <div class="stat-num" id="stat-online">—</div>
+      <div class="stat-label">当前在线设备</div>
+    </div>
+    <div class="stat-tile">
+      <div class="stat-num" id="stat-total">—</div>
+      <div class="stat-label">设备总数</div>
+    </div>
+    <div class="stat-tile">
+      <div class="stat-num" id="stat-offline">—</div>
+      <div class="stat-label">离线设备</div>
+    </div>
+    <div class="stat-tile">
+      <div class="stat-num" id="stat-percent">—</div>
+      <div class="stat-label">一级在线占比</div>
+    </div>
+  </div>
+</div>
+
+<div class="card">
+  <h3>今日在线设备曲线（00:00 起，每 5 秒一个采样点）</h3>
+  <div class="chart-box">
+    <svg id="chart-line" viewBox="0 0 1000 260" preserveAspectRatio="none" role="img"
+         aria-label="今日在线设备折线图"></svg>
+  </div>
+  <p class="muted" id="line-empty">暂无今日采样点，服务启动几分钟后自动出现。</p>
+</div>
+
+<div class="card">
+  <h3>在线设备占全部设备的百分比</h3>
+  <div class="donut-wrap">
+    <svg id="chart-donut" viewBox="0 0 240 240" role="img" aria-label="在线设备占比环形图"></svg>
+    <div class="donut-legend">
+      <div><span class="dot dot-online"></span>在线 <b id="donut-online">—</b> 台</div>
+      <div><span class="dot dot-offline"></span>离线 <b id="donut-offline">—</b> 台</div>
+      <div class="muted" id="donut-tip">白名单/黑名单不影响在线判定，阈值 = 轮询间隔 ×2（至少 120 秒）。</div>
+    </div>
+  </div>
+</div>
