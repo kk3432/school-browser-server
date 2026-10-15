@@ -2,7 +2,7 @@
 
 **配置驱动的校园受管浏览器后端**：Web 后台图形化配置 → RSA 签名下发 → 平板强制白/黑名单 → 设备与日志可视化管控。
 
-![version](https://img.shields.io/badge/version-0.8.1-1b7ae0)
+![version](https://img.shields.io/badge/version-0.8.3-1b7ae0)
 ![platform](https://img.shields.io/badge/.NET-8.0-512bd4)
 ![license](https://img.shields.io/badge/license-GPL--3.0-12b3a8)
 
@@ -40,7 +40,8 @@ flowchart LR
 | 模块 | 能力 |
 | --- | --- |
 | **首页概览** | 在线数 / 总数 / 离线数 / 在线占比环形图；**今日 00:00→24:00 在线设备折线图**；默认 1 秒刷新，切走暂停 |
-| **配置管理** | 首页与备用网址、白/黑名单规则（支持 `host:8080` 端口与路径前缀）、快捷书签、内置 HTML 页勾选、轮询间隔 30~86400s、kiosk、隐藏入口开关、截屏限制、启动拍照开关、可唤醒应用白名单、6 位平板 PIN |
+| **配置管理** | 首页与备用网址、白/黑名单规则（支持 `host:8080` 端口与路径前缀）、快捷书签、内置 HTML 页勾选、轮询间隔 30~86400s、kiosk、隐藏入口开关、截屏限制、启动拍照开关、可唤醒应用白名单 |
+| **系统设置** | 平板 6 位管理密码（`GET/POST /api/admin/pin`，留空保持不变；**与配置版本解耦，发布或回滚都不改动、也永不下发**）、配置签名公钥（内置到 APP 启用验签） |
 | **版本管理** | 每次发布版本号 +1；一键回滚 = 用旧内容发**新**版本号（终端必收到） |
 | **设备管理** | IP / APP 版本 / 配置版本 / 最后在线 / 拍照记录；在线/离线与关键词筛选；默认 1 秒自动刷新；CSV 导出（可选列 + 时间段） |
 | **操作日志** | 登录 IP 与时间（成功 / 失败 / 被限频）、管理操作、设备上报；按事件/时间/关键词筛选 + 分页 + CSV 导出；保留 90 天 |
@@ -66,7 +67,7 @@ dotnet publish CampusBrowser.Server.csproj -c Release -r win-x64 \
   --self-contained true -o installer/publish/win-x64      # 约 33 MB
 
 # 2) NSIS 编译（Linux 用 -D，Windows 用 /D）
-makensis -DAPP_VERSION=0.8.1 installer/campus-browser-server.nsi   # 产物约 11 MB
+makensis -DAPP_VERSION=0.8.3 installer/campus-browser-server.nsi   # 产物约 11 MB
 ```
 
 安装器：选项页设端口/目录/开机自启/桌面快捷方式 → 注册服务 → **安装完成即启动并等待端口就绪** → 放行防火墙 → 开始菜单 `.url` 后台入口。卸载默认保留 `data\campus.db`。
