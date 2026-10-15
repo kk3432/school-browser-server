@@ -18,11 +18,13 @@ public class OnlineSampler : BackgroundService
     private const int MinThresholdSeconds = 120;
 
     private readonly Database _db;
+    private readonly ConfigInterval _interval;
     private readonly ILogger<OnlineSampler> _logger;
 
-    public OnlineSampler(Database db, ILogger<OnlineSampler> logger)
+    public OnlineSampler(Database db, ConfigInterval interval, ILogger<OnlineSampler> logger)
     {
         _db = db;
+        _interval = interval;
         _logger = logger;
     }
 

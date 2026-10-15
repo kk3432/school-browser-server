@@ -21,6 +21,10 @@ const int VerifyPinMaxHits = 5;
 const int LoginWindowSeconds = 60;
 const int LoginMaxHits = 5;
 
+// 设备注册限频（v0.8.2，L2）：注册接口无鉴权，不限频可被批量伪造设备撑爆设备表与后台列表
+const int RegisterWindowSeconds = 60;
+const int RegisterMaxHits = 20;
+
 // 登录令牌有效期（v0.7.1，L3）：6 小时，每次有效请求滑动续期
 const long TokenTtlSeconds = 6 * 60 * 60;
 
@@ -53,6 +57,32 @@ builder.Services.AddHostedService<AuditLogWriter>();
 // 在线采样（v0.8.0）：首页全天折线图数据
 builder.Services.AddHostedService<OnlineSampler>();
 
+// 性能打点（v0.8.2）：进程内路由耗时/响应字节计数 + SQLite 访问计数，只观测不改行为。
+// 由 GET /api/admin/diag/perf 输出，tools/perf_probe.ps1 用它做预算判定。
+builder.Services.AddSingleton<PerfStats>();
+
+// 读路径缓存（v0.8.2）：
+//  - ConfigInterval：当前配置的 update_interval_seconds，30 秒 TTL（原来每次请求都读整份 config_json 再解析）
+//  - OverviewCache：首页概览「在线数 + 全天采样点 + 中位数间隔」按 5 秒采样周期缓存并预序列化
+builder.Services.AddSingleton<ConfigInterval>();
+builder.Services.AddSingleton<OverviewCache>();
+//  - ConfigCache：APP 下发配置的客户端视图（剥 PIN/正文 + RSA 签名），按版本号缓存
+builder.Services.AddSingleton<ConfigCache>();
+
+// 响应压缩（v0.8.2）：后台首页每秒拉一次概览（日终约 760 KB）、设备/日志列表、APP 配置 JSON 都高度可压。
+// 用 .NET 内置 ResponseCompression（Brotli + Gzip），不改任何端点逻辑；仅压 text/json 类。
+builder.Services.AddResponseCompression(o =>
+{
+    o.EnableForHttps = true;
+    o.Providers.Add<Microsoft.AspNetCore.ResponseCompression.BrotliCompressionProvider>();
+    o.Providers.Add<Microsoft.AspNetCore.ResponseCompression.GzipCompressionProvider>();
+    o.MimeTypes = new[]
+    {
+        "application/json", "text/json", "text/plain", "text/csv", "text/html",
+        "text/css", "application/javascript", "text/javascript", "image/svg+xml"
+    };
+});
+
 // 端口优先级：命令行/环境变量显式指定 > 安装目录 campus.port 覆盖文件 > 默认 8080。
 // campus.port 为安装器写入的纯文本端口号，升级覆盖安装时该文件保留，自定义端口不丢。
 var configuredUrls = builder.Configuration["Urls"];
@@ -68,7 +98,13 @@ if (string.IsNullOrWhiteSpace(configuredUrls))
 }
 builder.WebHost.UseUrls(configuredUrls ?? "http://0.0.0.0:8080");
 // 安全：不向响应暴露 Server 头，减少服务端指纹信息
-builder.WebHost.UseKestrel(o => o.AddServerHeader = false);
+builder.WebHost.UseKestrel(o =>
+{
+    o.AddServerHeader = false;
+    // v0.8.2：Kestrel 默认允许 30MB 请求体，而照片端点自己限 2MB（Program.cs 里 MaxPhotoBytes）。
+    // 原来 2MB-30MB 之间的请求会先完整落到内存/临时文件再被拒 → 直接卡在入口，3MB 兜住合法照片+余量。
+    o.Limits.MaxRequestBodySize = 3 * 1024 * 1024;
+});
 
 // 裁剪安全：Minimal API 请求体绑定/响应序列化接入 source generator（AppJsonContext），
 // 未注册类型（如 Results.Ok(new{...}) 匿名对象）由反射 resolver 兜底。
@@ -103,12 +139,32 @@ builder.Services.AddRateLimiter(rateOptions =>
                 QueueProcessingOrder = QueueProcessingOrder.OldestFirst,
                 AutoReplenishment = true
             }));
+    // 设备注册限频（v0.8.2，L2）：与登录同一套滑动窗口，按客户端 IP 分区
+    rateOptions.AddPolicy("register", httpContext =>
+        RateLimitPartition.GetSlidingWindowLimiter(
+            partitionKey: httpContext.Connection.RemoteIpAddress?.ToString()
+                         ?? httpContext.Request.Headers["X-Forwarded-For"].FirstOrDefault()
+                         ?? "unknown",
+            factory: _ => new SlidingWindowRateLimiterOptions
+            {
+                PermitLimit = RegisterMaxHits,
+                Window = TimeSpan.FromSeconds(RegisterWindowSeconds),
+                SegmentsPerWindow = 6,
+                QueueLimit = 0,
+                QueueProcessingOrder = QueueProcessingOrder.OldestFirst,
+                AutoReplenishment = true
+            }));
 });
 
 var app = builder.Build();
 
 var db = app.Services.GetRequiredService<Database>();
 db.Init();
+
+// 读路径缓存（v0.8.2）：轮询间隔缓存 + 首页概览缓存
+var configInterval = app.Services.GetRequiredService<ConfigInterval>();
+var overviewCache = app.Services.GetRequiredService<OverviewCache>();
+var configCache = app.Services.GetRequiredService<ConfigCache>();
 
 // 操作日志（v0.8.0）：登录 IP/时间、管理操作、设备上报
 var audit = app.Services.GetRequiredService<AuditLog>();
@@ -120,6 +176,110 @@ if (string.IsNullOrEmpty(db.GetSetting("rsa_private")))
     db.SetSetting("rsa_private", priv);
     db.SetSetting("rsa_public", pub);
 }
+
+// 性能打点中间件（v0.8.2）：只挂在 /api 下，统计每个路由的耗时与响应字节。
+// 用 CountingStream 包一层 Response.Body，不缓冲、不改内容；非 /api 请求直接放行，零额外开销。
+var perf = app.Services.GetRequiredService<PerfStats>();
+
+// 响应压缩（v0.8.2）：必须在打点中间件之前，打点记录的字节数才是真正上网的压缩后体积。
+app.UseResponseCompression();
+
+app.Use(async (ctx, next) =>
+{
+    if (!ctx.Request.Path.StartsWithSegments("/api"))
+    {
+        await next();
+        return;
+    }
+    var originalBody = ctx.Response.Body;
+    var counting = new CountingStream(originalBody);
+    ctx.Response.Body = counting;
+    var sw = System.Diagnostics.Stopwatch.StartNew();
+    try
+    {
+        await next();
+    }
+    finally
+    {
+        sw.Stop();
+        ctx.Response.Body = originalBody;
+        perf.Record(PerfStats.KeyOf(ctx), sw.Elapsed.TotalMilliseconds, counting.BytesWritten, ctx.Response.StatusCode);
+    }
+});
+
+// 性能验收口（v0.8.2，需管理员令牌）：路由耗时/字节 + SQLite 访问计数，供 tools/perf_probe.ps1 判定预算。
+// 阈值分两段走：B1 先用「基线宽松值」（保证改造中的旧路径也能跑过），B2 按实测收紧。
+app.MapGet("/api/admin/diag/perf", (HttpContext ctx, bool? reset) =>
+{
+    if (!IsAdmin(ctx)) return Results.Unauthorized();
+    var budget = new Dictionary<string, (double AvgMs, long Bytes)>(StringComparer.Ordinal)
+    {
+        ["GET /api/admin/stats/overview"] = (400, 1_000_000),
+        ["GET /api/admin/devices"] = (100, 60_000),
+        ["GET /api/admin/config/versions"] = (150, 200_000),
+        ["GET /api/v1/config"] = (200, 400_000),
+        ["POST /api/v1/devices/heartbeat"] = (150, 2_000)
+    };
+    var routes = perf.Routes.Select(kv =>
+    {
+        var stat = kv.Value;
+        var hasBudget = budget.TryGetValue(kv.Key, out var b);
+        return new
+        {
+            route = kv.Key,
+            count = stat.Count,
+            avgMs = stat.AvgMs,
+            maxMs = stat.MaxMs,
+            avgBytes = stat.AvgBytes,
+            maxBytes = stat.MaxBytes,
+            errors = stat.Errors,
+            budgetAvgMs = hasBudget ? b.AvgMs : 0,
+            budgetBytes = hasBudget ? b.Bytes : 0,
+            pass = !hasBudget || (stat.AvgMs <= b.AvgMs && stat.AvgBytes <= b.Bytes)
+        };
+    }).ToList();
+    var payload = new
+    {
+        uptimeSeconds = perf.UptimeSeconds,
+        auditQueue = audit.Pending,
+        db = new
+        {
+            connOpens = DbStats.ConnOpens,
+            transactions = DbStats.Transactions,
+            writes = DbStats.Writes,
+            tokenLookups = DbStats.TokenLookups,
+            tokenCacheHits = DbStats.TokenCacheHits,
+            tokenRenewWrites = DbStats.TokenRenewWrites,
+            logBatches = DbStats.LogBatches,
+            overviewCacheHits = DbStats.OverviewCacheHits,
+            overviewCacheMisses = DbStats.OverviewCacheMisses,
+            configCacheHits = DbStats.ConfigCacheHits,
+            configCacheMisses = DbStats.ConfigCacheMisses
+        },
+        routes
+    };
+    // 压测脚本在测量前清零，保证统计窗口干净（先取快照再清零）
+    if (reset == true)
+    {
+        perf.Reset();
+        DbStats.Reset();
+    }
+    return Results.Ok(payload);
+});
+
+/// <summary>
+/// 性能验收种子（v0.8.2）：只在设置环境变量 CAMPUS_PERF_SEED=1 的进程上存在（服务/生产模式不会有，
+/// 其余情况返回 404，与「接口不存在」不可区分）。用来把空库灌成「日终 17,280 个采样点 + 200 台设备」，
+/// 否则测的是一张空表的读路径，量不出真实代价。
+/// </summary>
+app.MapPost("/api/admin/diag/seed", (HttpContext ctx, int? devices, int? samples) =>
+{
+    if (Environment.GetEnvironmentVariable("CAMPUS_PERF_SEED") != "1") return Results.NotFound();
+    if (!IsAdmin(ctx)) return Results.Unauthorized();
+    var seededDevices = db.SeedDevices(Math.Clamp(devices ?? 200, 0, 5000));
+    var seededSamples = db.SeedOnlineSamples(Math.Clamp(samples ?? 17280, 0, 20000), OnlineSampleSeconds);
+    return Results.Ok(new { ok = true, devices = seededDevices, samples = seededSamples });
+});
 
 app.UseDefaultFiles();
 app.UseStaticFiles();
@@ -176,33 +336,6 @@ bool IsAdmin(HttpContext ctx) => db.TokenValid(TokenFrom(ctx), TokenTtlSeconds);
 
 /// <summary>审计日志里的操作人：管理端操作统一记管理员用户名。</summary>
 string AuditActor() => db.GetSetting("admin_user") ?? "";
-
-/// <summary>
-/// M2（v0.7.1）：下发给 APP 前从配置 JSON 中剥离 admin_pin_hash。
-/// 版本库里仍保留该字段（供 verify-pin 读取、回滚跟随）；剥离改变了字节，
-/// 必须用私钥对剥离后的内容重新签名，APP 端 RSA 验签才能通过。
-/// </summary>
-(string Json, string Signature) StripPinForClient(string configJson)
-{
-    var obj = JsonNode.Parse(configJson)!.AsObject();
-    obj.Remove("admin_pin_hash");
-    // HTML 页：配置里只保留 slug/title 元数据，正文通过 /h/{slug} 单独下发（避免配置体积膨胀）
-    if (obj["html_pages"] is JsonArray pages)
-    {
-        foreach (var node in pages)
-        {
-            if (node is JsonObject page) page.Remove("html");
-        }
-    }
-    var stripped = obj.ToJsonString(new JsonSerializerOptions
-    {
-        WriteIndented = false,
-        Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping
-    });
-    var priv = db.GetSetting("rsa_private") ?? "";
-    var signature = Signer.Sign(priv, Encoding.UTF8.GetBytes(stripped));
-    return (stripped, signature);
-}
 
 /// <summary>
 /// APP 接口 UA 校验（v0.7.0）：后台开关 ua_check_enabled 开启时，请求 UA 必须含 OkHttp/，否则 403。
@@ -287,18 +420,7 @@ static DateTimeOffset? ParseTimeParam(string? raw)
 }
 
 /// <summary>当前配置的轮询间隔推导出的在线判定阈值：间隔 2 倍，至少 120 秒。</summary>
-TimeSpan OnlineThreshold()
-{
-    var interval = 300;
-    var currentJson = db.GetCurrentVersion()?.ConfigJson;
-    if (currentJson is not null)
-    {
-        using var doc = JsonDocument.Parse(currentJson);
-        if (doc.RootElement.TryGetProperty("update_interval_seconds", out var iv))
-            interval = iv.GetInt32();
-    }
-    return TimeSpan.FromSeconds(Math.Max(interval * 2, 120));
-}
+TimeSpan OnlineThreshold() => TimeSpan.FromSeconds(Math.Max(configInterval.Seconds * 2, 120));
 
 /// <summary>事件名 → 中文展示名（后台筛选与日志表共用）。</summary>
 static string EventLabel(string evt) => evt switch
@@ -437,6 +559,8 @@ app.MapPost("/api/setup", (SetupRequest req, HttpContext ctx) =>
     var (json, signature) = SerializeAndSign(config);
     var id = db.InsertVersion("1.0.0", json, signature, "初始化配置");
     db.SetCurrent(id);
+    configInterval.Invalidate();
+    configCache.Invalidate();
     // 内置 HTML 页：初始化时提交的页面同时落库，/h/{slug} 才能直接打开
     var createdPages = 0;
     foreach (var p in config.HtmlPages)
@@ -506,6 +630,8 @@ app.MapPost("/api/admin/config/publish", (HttpContext ctx, PublishRequest req) =
     var (json, signature) = SerializeAndSign(config);
     var id = db.InsertVersion(version, json, signature, string.IsNullOrWhiteSpace(req.Note) ? "后台发布" : req.Note.Trim());
     db.SetCurrent(id);
+    configInterval.Invalidate(); // 新配置可能改了 update_interval_seconds，立即生效
+    configCache.Invalidate();    // 新版本号 → 旧的下发视图（剥 PIN + 签名）作废
     // 内置 HTML 页：发布时带入的正文同样落库（正文为空的条目只更新标题，避免覆盖已有内容）
     var touched = 0;
     foreach (var p in config.HtmlPages)
@@ -525,9 +651,13 @@ app.MapPost("/api/admin/config/publish", (HttpContext ctx, PublishRequest req) =
 app.MapGet("/api/admin/config/versions", (HttpContext ctx) =>
 {
     if (!IsAdmin(ctx)) return Results.Unauthorized();
-    return Results.Ok(db.ListVersions().Select(v => new
+    // v0.8.2 修复 N+1：GetCurrentVersion() 原来写在 Select 里，每行都要查一次库并读出
+    // 整份 config_json（含 HTML 正文），50 个版本 = 50 次查询 + 50 份 blob；提到外面只查一次。
+    var currentVersion = db.GetCurrentVersion()?.Version;
+    // v0.8.2 瘦身：只查 version/published_at/note 三列（原来连 config_json 一起读，50 版可能几十 MB）
+    return Results.Ok(db.ListVersionSummaries().Select(v => new
     {
-        v.Version, v.PublishedAt, v.Note, current = v.Version == db.GetCurrentVersion()?.Version
+        v.Version, v.PublishedAt, v.Note, current = v.Version == currentVersion
     }));
 });
 
@@ -545,6 +675,8 @@ app.MapPost("/api/admin/config/rollback", (HttpContext ctx, string version) =>
     var (json, signature) = SerializeAndSign(config);
     var id = db.InsertVersion(newVersion, json, signature, $"回滚自 {version}");
     db.SetCurrent(id);
+    configInterval.Invalidate();
+    configCache.Invalidate();
     audit.Log(ctx, AuditLog.Events.ConfigRollback,
         detail: $"回滚 {version} → 新版本 {newVersion}",
         status: StatusCodes.Status200OK, actor: AuditActor());
@@ -556,7 +688,14 @@ app.MapGet("/api/admin/devices", (HttpContext ctx) =>
     if (!IsAdmin(ctx)) return Results.Unauthorized();
     // 在线判定阈值：轮询间隔的 2 倍，至少 120 秒
     var threshold = OnlineThreshold();
-    return Results.Ok(db.ListDevices().Select(d => new
+    // 分页（v0.8.2，L2）：默认最多 500 台/次，设备再多也不会一次把整表塞给网页；
+    // 总数放响应头，前端需要时可以显示“共 N 台”。
+    var limit = int.TryParse(ctx.Request.Query["limit"].FirstOrDefault(), out var l)
+        ? Math.Clamp(l, 1, 1000) : 500;
+    var offset = int.TryParse(ctx.Request.Query["offset"].FirstOrDefault(), out var o)
+        ? Math.Max(o, 0) : 0;
+    ctx.Response.Headers["X-Total-Count"] = db.CountDevices().ToString();
+    return Results.Ok(db.ListDevices(limit, offset).Select(d => new
     {
         d.DeviceId, d.Name, d.AppVersion, d.ConfigVersion, d.IpAddress,
         d.RegisteredAt, d.LastSeen, d.LastPhotoAt, d.PhotoSkipReason, d.LastWrongPinPhotoAt,
@@ -571,47 +710,51 @@ app.MapGet("/api/admin/devices", (HttpContext ctx) =>
 app.MapGet("/api/admin/stats/overview", (HttpContext ctx) =>
 {
     if (!IsAdmin(ctx)) return Results.Unauthorized();
-    var threshold = OnlineThreshold();
-    var devices = db.ListDevices();
-    var onlineCount = devices.Count(d => IsOnline(d.LastSeen, threshold));
-    var total = devices.Count;
+    var now = DateTimeOffset.Now.ToUnixTimeSeconds();
 
-    // 今日 00:00（本地时区）作为曲线起点
-    var todayStart = new DateTimeOffset(DateTimeOffset.Now.Date, DateTimeOffset.Now.Offset).ToUnixTimeSeconds();
-    var rows = db.ListOnlineSamples(todayStart);
-    var samples = rows
-        .Select(s => new { ts = s.Ts, online = s.Online, total = s.Total })
-        .ToList();
-    // 采样间隔（秒）：取相邻采样点间隔的中位数，只有 1 个点时用设计值 5
-    var sampleSeconds = OnlineSampleSeconds;
-    if (rows.Count >= 3)
+    // 整份响应（1 秒轮询里 4/5 次直接命中 5 秒缓存，零查询零序列化）
+    var build = () =>
     {
-        var deltas = new List<int>();
-        for (var i = 1; i < rows.Count; i++)
+        var threshold = OnlineThreshold();
+        var lastSeen = db.ListDeviceLastSeen();
+        var total = lastSeen.Count;
+        var onlineCount = lastSeen.Count(s => IsOnline(s, threshold));
+
+        var todayStart = new DateTimeOffset(DateTimeOffset.Now.Date, DateTimeOffset.Now.Offset).ToUnixTimeSeconds();
+        var rows = db.ListOnlineSamples(todayStart);
+        var samples = rows.Select(s => new OverviewCache.Sample(s.Ts, s.Online, s.Total)).ToList();
+
+        // 采样间隔（秒）：取相邻采样点间隔的中位数，只有 1 个点时用设计值 5
+        var sampleSeconds = OnlineSampleSeconds;
+        if (rows.Count >= 3)
         {
-            var d = (int)(rows[i].Ts - rows[i - 1].Ts);
-            if (d is > 0 and < 600) deltas.Add(d);
+            var deltas = new List<int>();
+            for (var i = 1; i < rows.Count; i++)
+            {
+                var d = (int)(rows[i].Ts - rows[i - 1].Ts);
+                if (d is > 0 and < 600) deltas.Add(d);
+            }
+            if (deltas.Count > 0)
+            {
+                deltas.Sort();
+                sampleSeconds = deltas[deltas.Count / 2];
+            }
         }
-        if (deltas.Count > 0)
-        {
-            deltas.Sort();
-            sampleSeconds = deltas[deltas.Count / 2];
-        }
+        return (onlineCount, total, sampleSeconds, samples);
+    };
+
+    // 增量模式（v0.8.2 前端每秒调用）：?since=<最后一点 ts> 只回新增采样点，响应从几百 KB 降到几百字节。
+    var sinceRaw = ctx.Request.Query["since"].FirstOrDefault();
+    if (long.TryParse(sinceRaw, out var since) && since > 0)
+    {
+        overviewCache.GetFullJson(now, OnlineSampleSeconds, OnlineSampleKeepDays, build);
+        ctx.Response.Headers.CacheControl = "no-store";
+        return Results.Text(overviewCache.BuildDelta(now, since), "application/json; charset=utf-8");
     }
 
-    return Results.Ok(new
-    {
-        now = DateTimeOffset.Now.ToUnixTimeSeconds(),
-        online = onlineCount,
-        offline = total - onlineCount,
-        total,
-        percent = total == 0 ? 0 : Math.Round(onlineCount * 100.0 / total, 1),
-        todayStart,
-        dayStart = DateTimeOffset.Now.Date.ToString("yyyy-MM-dd HH:mm:ss zzz"),
-        sampleSeconds,
-        keepDays = OnlineSampleKeepDays,
-        samples
-    });
+    var full = overviewCache.GetFullJson(now, OnlineSampleSeconds, OnlineSampleKeepDays, build);
+    ctx.Response.Headers.CacheControl = "no-store";
+    return Results.Bytes(full, "application/json; charset=utf-8");
 });
 
 /// <summary>操作日志查询（v0.8.0，需 Bearer Token）。从/到支持 Unix 秒或 ISO 时间。</summary>
@@ -827,16 +970,30 @@ app.MapGet("/api/admin/security", (HttpContext ctx) =>
 // ============ 内置 HTML 页（v0.8.0） ============
 // 管理员在后台编辑静态 HTML，平板把 http://<服务端>/h/<slug> 加进书签即可在受管 WebView 中打开。
 
-/// <summary>HTML 页列表（含正文，供后台编辑器填充）。</summary>
+/// <summary>
+/// HTML 页列表（v0.8.2 瘦身：只回标题/大小/时间，不回正文）。
+/// 正文由 GET /api/admin/html-pages/{id} 单页取——原来列表把每页正文（单页上限 512 KB）全带上，
+/// 10 页就是 5 MB 响应，而首屏并发 8 个接口时纯属浪费。
+/// </summary>
 app.MapGet("/api/admin/html-pages", (HttpContext ctx) =>
 {
     if (!IsAdmin(ctx)) return Results.Unauthorized();
-    return Results.Ok(db.ListHtmlPages().Select(p => new
+    var baseUrl = $"{ctx.Request.Scheme}://{ctx.Request.Host}/h/";
+    return Results.Ok(db.ListHtmlPageSummaries().Select(p => new
     {
-        p.Id, p.Slug, p.Title, p.Html, p.CreatedAt, p.UpdatedAt,
-        url = $"{ctx.Request.Scheme}://{ctx.Request.Host}/h/{p.Slug}",
-        size = Encoding.UTF8.GetByteCount(p.Html)
+        id = p.Id, slug = p.Slug, title = p.Title, createdAt = p.CreatedAt, updatedAt = p.UpdatedAt,
+        url = baseUrl + p.Slug,
+        size = p.Size
     }));
+});
+
+/// <summary>单页 HTML 正文（v0.8.2，后台编辑器点击时按需拉取）。</summary>
+app.MapGet("/api/admin/html-pages/{id:long}", (HttpContext ctx, long id) =>
+{
+    if (!IsAdmin(ctx)) return Results.Unauthorized();
+    var page = db.GetHtmlPageById(id);
+    if (page is null) return Results.NotFound(new { error = "HTML 页不存在" });
+    return Results.Ok(new { page.Id, page.Slug, page.Title, page.Html, page.CreatedAt, page.UpdatedAt });
 });
 
 /// <summary>新建或更新 HTML 页（id=0/缺省为新建）。</summary>
@@ -885,7 +1042,14 @@ app.MapGet("/h/{slug}", (HttpContext ctx, string slug) =>
     if (page is null) return Results.NotFound("页面不存在");
     ctx.Response.Headers["X-Content-Type-Options"] = "nosniff";
     ctx.Response.Headers["Referrer-Policy"] = "no-referrer";
-    ctx.Response.Headers["Cache-Control"] = "no-cache, must-revalidate";
+    // v0.8.2：原来强制 no-cache, must-revalidate = 平板每次进入书签都完整重下整页，
+    // 现在用 updated_at 生成弱 ETag：没改就 304（几十字节），改了才回正文；再给 60 秒本地缓存。
+    var etag = "\"h" + Convert.ToHexString(System.Security.Cryptography.MD5.HashData(
+        Encoding.UTF8.GetBytes($"{page.Id}:{page.UpdatedAt}:{page.Html.Length}"))).ToLowerInvariant() + "\"";
+    ctx.Response.Headers.ETag = etag;
+    ctx.Response.Headers["Cache-Control"] = "private, max-age=60";
+    var ifNoneMatch = ctx.Request.Headers.IfNoneMatch.ToString();
+    if (!string.IsNullOrEmpty(ifNoneMatch) && ifNoneMatch.Contains(etag)) return Results.StatusCode(StatusCodes.Status304NotModified);
     return Results.Text(page.Html, "text/html; charset=utf-8", Encoding.UTF8);
 });
 
@@ -923,8 +1087,8 @@ app.MapGet("/api/v1/config", async (HttpContext ctx) =>
     if (!string.IsNullOrWhiteSpace(deviceId)) db.TouchDeviceSeen(deviceId!, row.Version);
 
     // M2：剥离 admin_pin_hash 后用私钥重签，再下发（版本号不变）
-    var (clientJson, clientSignature) = StripPinForClient(row.ConfigJson);
-    var bytes = Encoding.UTF8.GetBytes(clientJson);
+    // v0.8.2：同一版本只算一次「解析 + 剥正文 + RSA 重签 + UTF8 编码」，结果按版本号缓存。
+    var (bytes, clientSignature) = configCache.GetClientConfig(row.Version, row.ConfigJson);
     ctx.Response.StatusCode = 200;
     ctx.Response.ContentType = "application/json; charset=utf-8";
     ctx.Response.Headers["X-Config-Version"] = row.Version;
@@ -943,15 +1107,15 @@ app.MapPost("/api/v1/devices/register", (HttpContext ctx, DeviceRequest req) =>
         detail: $"设备 {id} 注册：{req.Name}，APP {req.AppVersion}，上报 IP {req.IpAddress}",
         status: StatusCodes.Status200OK, deviceId: id);
     return Results.Ok(new { ok = true });
-});
+}).RequireRateLimiting("register");
 
 app.MapPost("/api/v1/devices/heartbeat", (HttpContext ctx, DeviceRequest req) =>
 {
     if (!AppUaValid(ctx)) return Results.Json(new { error = "非法客户端" }, statusCode: 403);
     if (string.IsNullOrWhiteSpace(req.DeviceId)) return Results.BadRequest(new { error = "缺少 device_id" });
     var id = req.DeviceId.Trim();
-    db.UpsertDevice(id, req.Name, req.AppVersion, req.IpAddress);
-    db.TouchDeviceSeen(id, req.ConfigVersion);
+    // v0.8.2：合并成一条 UPSERT（原来 UpsertDevice + TouchDeviceSeen = 两次连接、两次事务、两次 fsync）
+    db.TouchDeviceHeartbeat(id, req.Name, req.AppVersion, req.IpAddress, req.ConfigVersion);
     // 心跳量大：按「事件+设备」60 秒合并成一条，避免日志表被写爆
     audit.Log(ctx, AuditLog.Events.DeviceHeartbeat,
         detail: $"设备 {id} 心跳，IP {req.IpAddress}，配置版本 {req.ConfigVersion}",

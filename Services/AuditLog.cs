@@ -124,10 +124,15 @@ public class AuditLog
     /// <summary>非阻塞取一条（消费者批量清空积压用）。</summary>
     public bool TryRead(out LogRow? row) => _channel.Reader.TryRead(out row);
 
-    /// <summary>批量补写（消费者刷盘时调用，兼容单条）。</summary>
+    /// <summary>
+    /// 批量补写（消费者刷盘时调用）。
+    /// v0.8.2：交给 Database.InsertLogs 走「一个连接 + 一个显式事务」，
+    /// 改造前这里是 foreach 逐条 InsertLog，每行一次连接取用 + 一次 autocommit（WAL 下即一次 fsync）。
+    /// </summary>
     public void Write(IEnumerable<LogRow> rows)
     {
-        foreach (var r in rows) _db.InsertLog(r);
+        var list = rows as IReadOnlyList<LogRow> ?? rows.ToList();
+        _db.InsertLogs(list);
     }
 
     /// <summary>清空过期节流键，避免字典无界增长。</summary>
@@ -204,9 +209,12 @@ public class AuditLogWriter : BackgroundService
         {
             var logs = _db.PurgeOldLogs(LogRetentionDays);
             var samples = _db.PurgeOldOnlineSamples(SampleRetentionDays);
+            // v0.8.2：令牌过期清理从「每个请求都删一次」挪到每天一次兜底
+            // （请求路径上已由 Database.PurgeExpiredTokensIfDue 以 10 分钟节流处理）。
+            var tokens = _db.PurgeExpiredTokens(DateTimeOffset.Now.ToUnixTimeSeconds());
             _audit.PruneThrottle();
-            if (logs > 0 || samples > 0)
-                _logger.LogInformation("日志清理完成：删除日志 {Logs} 条、采样点 {Samples} 个", logs, samples);
+            if (logs > 0 || samples > 0 || tokens > 0)
+                _logger.LogInformation("日志清理完成：删除日志 {Logs} 条、采样点 {Samples} 个、过期令牌 {Tokens} 个", logs, samples, tokens);
         }
         catch (Exception ex)
         {
