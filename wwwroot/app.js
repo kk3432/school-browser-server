@@ -12,14 +12,18 @@ const state = {
   logs: { page: 0, size: 100, total: 0, items: [], events: [] },
   logTimer: null,
   homeTimer: null,
-  overview: null
+  overview: null,
+  // v0.8.2 概览增量刷新：最后一点的 ts、在途标记、折线图静态层缓存
+  overviewLastTs: 0,
+  overviewInFlight: false,
+  chartStatic: null
 };
 
-// 设备面板自动刷新：默认 1 秒/次（v0.8.0），用户选择持久化到本地
+// 设备面板自动刷新：默认 5 秒/次（v0.8.2 由 1 秒放宽，用户选择持久化到本地）
 const AUTO_REFRESH_KEY = 'cb_auto_refresh';
 function savedAutoRefresh() {
   const v = parseInt(localStorage.getItem(AUTO_REFRESH_KEY), 10);
-  return Number.isFinite(v) ? v : 1;
+  return Number.isFinite(v) ? v : 5;
 }
 
 async function api(path, options = {}) {
@@ -294,23 +298,38 @@ function renderHtmlList() {
   state.htmlPages.forEach(p => {
     const div = document.createElement('div');
     div.className = 'html-item' + (p.id === state.currentHtmlId ? ' active' : '');
-    div.innerHTML = `<div class="t">${escHtml(p.title || p.slug)}</div><div class="s">/h/${escHtml(p.slug)}</div>`;
+    div.innerHTML = `<div class="t">${escHtml(p.title || p.slug)}</div><div class="s">/h/${escHtml(p.slug)} · ${fmtSize(p.size)}</div>`;
     div.addEventListener('click', () => selectHtmlPage(p.id));
     box.appendChild(div);
   });
 }
 
-function selectHtmlPage(id) {
+function fmtSize(bytes) {
+  const n = Number(bytes) || 0;
+  return n >= 1024 ? (n / 1024).toFixed(1) + ' KB' : n + ' B';
+}
+
+async function selectHtmlPage(id) {
   const p = state.htmlPages.find(x => x.id === id);
   if (!p) return;
   state.currentHtmlId = id;
   $('html-id').value = String(p.id);
   $('html-title').value = p.title || '';
   $('html-slug').value = p.slug || '';
-  $('html-body').value = p.html || '';
   $('html-url-line').textContent = '访问地址：' + (p.url || '/h/' + p.slug);
   setMsg('html-msg', '');
   renderHtmlList();
+  // v0.8.2：列表接口不再带正文（10 页最多 5 MB），选中时按需取单页正文
+  $('html-body').value = '加载中…';
+  try {
+    const detail = await api('/api/admin/html-pages/' + id);
+    if (state.currentHtmlId === id) $('html-body').value = detail.html || '';
+  } catch (e) {
+    if (state.currentHtmlId === id) {
+      $('html-body').value = '';
+      setMsg('html-msg', '正文加载失败：' + e.message);
+    }
+  }
 }
 
 function newHtmlPage() {
@@ -613,19 +632,44 @@ function stopHomeRefresh() {
 
 function startHomeRefresh() {
   stopHomeRefresh();
+  // 切换频率/重新进入首页时丢掉增量状态，先拉一整份
+  state.overview = null;
+  state.overviewLastTs = 0;
+  state.chartStatic = null;
   const seconds = parseInt($('home-auto-refresh').value, 10);
   refreshOverview();
   if (seconds > 0) state.homeTimer = setInterval(refreshOverview, seconds * 1000);
 }
 
-/** 拉取概览指标（在线数/总数/百分比 + 今日采样曲线）并重绘三块图。 */
+/**
+ * 拉取概览指标（在线数/总数/百分比 + 今日采样曲线）并重绘三块图。
+ * v0.8.2：首次拉整份，之后带 ?since=<最后一点 ts> 走增量——服务端按 5 秒采样周期缓存整份结果，
+ * 增量响应只有 0-2 个点（几百字节），不再每秒重传整天采样（日终约 760 KB）。
+ * 同时加在途守卫：上一次没返回就不叠加新请求（响应 > 刷新间隔时原来的定时器会堆请求）。
+ */
 async function refreshOverview() {
+  if (state.overviewInFlight) return;
+  state.overviewInFlight = true;
   try {
-    const data = await api('/api/admin/stats/overview');
-    state.overview = data;
-    renderOverview(data);
+    const path = state.overviewLastTs
+      ? '/api/admin/stats/overview?since=' + state.overviewLastTs
+      : '/api/admin/stats/overview';
+    const data = await api(path);
+    if (data.mode === 'delta' && state.overview) {
+      const merged = Object.assign({}, state.overview, data);
+      merged.samples = (state.overview.samples || []).concat(data.samples || []);
+      state.overview = merged;
+      renderOverview(merged);
+    } else {
+      state.overview = data;
+      renderOverview(data);
+    }
+    const samples = state.overview.samples || [];
+    if (samples.length) state.overviewLastTs = samples[samples.length - 1].ts;
   } catch (e) {
     // 自动刷新失败静默，不打断界面
+  } finally {
+    state.overviewInFlight = false;
   }
 }
 
@@ -650,7 +694,12 @@ function renderLineChart(d) {
   const plotW = W - padL - padR, plotH = H - padT - padB;
   const dayStart = d.todayStart;
   const dayEnd = dayStart + 86400;
-  const maxVal = Math.max(1, d.total, ...(d.samples || []).map(s => s.total), ...(d.samples || []).map(s => s.online));
+  // v0.8.2：不再用两个展开运算符（日终 17,280 点 = 34,560 个实参，逼近引擎参数上限，且每秒重算）
+  let maxVal = Math.max(1, d.total || 0);
+  for (const s of (d.samples || [])) {
+    if (s.total > maxVal) maxVal = s.total;
+    if (s.online > maxVal) maxVal = s.online;
+  }
   const xOf = ts => padL + Math.min(1, Math.max(0, (ts - dayStart) / 86400)) * plotW;
   const yOf = v => padT + plotH - (Math.min(v, maxVal) / maxVal) * plotH;
 
@@ -662,20 +711,27 @@ function renderLineChart(d) {
     ? `${padL},${padT + plotH} ${line} ${xOf(pts[pts.length - 1].ts).toFixed(1)},${padT + plotH}`
     : '';
 
-  // Y 轴 5 条网格线（整数刻度）
-  let grid = '';
-  for (let i = 0; i <= 4; i++) {
-    const v = Math.round(maxVal * i / 4);
-    const y = yOf(v);
-    grid += `<line x1="${padL}" y1="${y.toFixed(1)}" x2="${W - padR}" y2="${y.toFixed(1)}" stroke="#eef2f7" stroke-width="1"/>`
-      + `<text x="${padL - 8}" y="${(y + 4).toFixed(1)}" text-anchor="end" font-size="11" fill="#94a3b8">${v}</text>`;
-  }
-  // X 轴每 4 小时一个刻度
-  let xAxis = '';
-  for (let h = 0; h <= 24; h += 4) {
-    const x = padL + (h / 24) * plotW;
-    xAxis += `<line x1="${x.toFixed(1)}" y1="${padT}" x2="${x.toFixed(1)}" y2="${padT + plotH}" stroke="#f6f8fb" stroke-width="1"/>`
-      + `<text x="${x.toFixed(1)}" y="${H - 8}" text-anchor="middle" font-size="11" fill="#94a3b8">${String(h).padStart(2, '0')}:00</text>`;
+  // 网格/坐标轴静态层：只跟 maxVal 与当天起点有关，每秒刷新时复用字符串（原来每秒重建整块 SVG innerHTML 的这部分）
+  let grid, xAxis;
+  const cache = state.chartStatic;
+  if (cache && cache.maxVal === maxVal && cache.dayStart === dayStart) {
+    grid = cache.grid;
+    xAxis = cache.xAxis;
+  } else {
+    grid = '';
+    for (let i = 0; i <= 4; i++) {
+      const v = Math.round(maxVal * i / 4);
+      const y = yOf(v);
+      grid += `<line x1="${padL}" y1="${y.toFixed(1)}" x2="${W - padR}" y2="${y.toFixed(1)}" stroke="#eef2f7" stroke-width="1"/>`
+        + `<text x="${padL - 8}" y="${(y + 4).toFixed(1)}" text-anchor="end" font-size="11" fill="#94a3b8">${v}</text>`;
+    }
+    xAxis = '';
+    for (let h = 0; h <= 24; h += 4) {
+      const x = padL + (h / 24) * plotW;
+      xAxis += `<line x1="${x.toFixed(1)}" y1="${padT}" x2="${x.toFixed(1)}" y2="${padT + plotH}" stroke="#f6f8fb" stroke-width="1"/>`
+        + `<text x="${x.toFixed(1)}" y="${H - 8}" text-anchor="middle" font-size="11" fill="#94a3b8">${String(h).padStart(2, '0')}:00</text>`;
+    }
+    state.chartStatic = { maxVal, dayStart, grid, xAxis };
   }
   const last = pts[pts.length - 1];
   const dot = last ? `<circle cx="${xOf(last.ts).toFixed(1)}" cy="${yOf(last.v).toFixed(1)}" r="3.5" fill="#1b7ae0"/>` : '';
