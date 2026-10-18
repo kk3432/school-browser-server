@@ -50,6 +50,22 @@ flowchart LR
 
 ---
 
+## 后台界面
+
+后台是**零依赖、零构建**的原生 HTML/CSS/JS（无框架、无 CDN、无图标字体），整站样式集中在 `wwwroot/styles.css` 一个文件：
+
+- **设计基调**：Data-Dense Dashboard —— 蓝色数据主色（`#1e40af`，悬停 `#2563eb`）+ 琥珀色行动点（`#b45309`），4/8 间距节奏，卡片 / 表格 / 表单三级密度
+- **设计令牌**：颜色、间距、圆角、阴影、动效全部集中在 `styles.css` 的 `:root`；组件规则里不写裸 hex（图表内联 SVG 是唯一例外）
+- **字体**：只用系统字体栈 —— CSP 为 `default-src 'self'` 且未放开 `font-src`，**任何 web 字体（外链或自托管）都会被拦**
+- **矢量图标**：标签页与操作按钮使用内联 SVG（Phosphor 线性风格），不用 emoji、不引图标字体
+- **表格**：滚动区域限高 + 表头吸顶、斑马纹、行 hover、异常行（`tr.row-warn`）红色标记
+- **响应式**：容器 1180px；900 / 820 / 640px 三档收敛为单列，工具栏自动纵排
+- **无障碍**：`:focus-visible` 焦点环、`aria-selected` / `role="dialog" aria-modal`、`prefers-reduced-motion` 动效降级、正文对比度 ≥ 4.5:1
+
+改样式只需改 `styles.css`；`js/pages/home.js` 里折线图与环形图的配色是内联 SVG 字符串，换主色时要同步调整。
+
+---
+
 ## 快速开始
 
 ```bash

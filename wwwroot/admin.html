@@ -3,11 +3,12 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="color-scheme" content="light">
   <title>控制台 · 校园浏览器服务端</title>
   <link rel="icon" href="favicon.ico">
   <link rel="stylesheet" href="styles.css">
 </head>
-<body>
+<body class="page-admin">
 <div class="wrap">
   <header class="page-header">
     <img src="logo.png" alt="校园浏览器 logo" class="page-logo">
@@ -22,19 +23,46 @@
     <div class="bar">
       <h2>控制台</h2>
       <div>
-        <button id="btn-reload" class="ghost">刷新</button>
-        <button id="btn-logout" class="ghost">退出登录</button>
+        <button id="btn-reload" class="ghost" title="重新拉取全部数据">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M20 12a8 8 0 1 1-2.6-5.9"/><path d="M20 4.2V9h-4.8"/></svg>
+          刷新
+        </button>
+        <button id="btn-logout" class="ghost" title="退出当前管理员登录">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M13.5 5H6.5A1.5 1.5 0 0 0 5 6.5v11A1.5 1.5 0 0 0 6.5 19h7"/><path d="M9.5 12H20"/><path d="M16.5 8.5 20 12l-3.5 3.5"/></svg>
+          退出登录
+        </button>
       </div>
     </div>
 
-    <div class="tabs" role="tablist">
-      <button type="button" class="tab active" data-tab="home" role="tab">首页</button>
-      <button type="button" class="tab" data-tab="config" role="tab">配置管理</button>
-      <button type="button" class="tab" data-tab="devices" role="tab">设备管理</button>
-      <button type="button" class="tab" data-tab="html" role="tab">HTML 页</button>
-      <button type="button" class="tab" data-tab="logs" role="tab">操作日志</button>
-      <button type="button" class="tab" data-tab="versions" role="tab">版本历史</button>
-      <button type="button" class="tab" data-tab="settings" role="tab">系统设置</button>
+    <div class="tabs" role="tablist" aria-label="控制台功能分区">
+      <button type="button" class="tab active" data-tab="home" role="tab" aria-selected="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M3.5 11.5 12 4.5l8.5 7"/><path d="M5.5 10.5v9h13v-9"/></svg>
+        首页
+      </button>
+      <button type="button" class="tab" data-tab="config" role="tab" aria-selected="false">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M4 7.5h4.5M12.5 7.5H20M4 16.5h8.5M16.5 16.5H20"/><circle cx="10.5" cy="7.5" r="2"/><circle cx="14.5" cy="16.5" r="2"/></svg>
+        配置管理
+      </button>
+      <button type="button" class="tab" data-tab="devices" role="tab" aria-selected="false">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><rect x="3" y="4.5" width="18" height="12" rx="2"/><path d="M8.5 20.5h7M12 16.5v4"/></svg>
+        设备管理
+      </button>
+      <button type="button" class="tab" data-tab="html" role="tab" aria-selected="false">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M13.5 3.5H7A1.5 1.5 0 0 0 5.5 5v14A1.5 1.5 0 0 0 7 20.5h10a1.5 1.5 0 0 0 1.5-1.5V8.5z"/><path d="M13.5 3.5v5h5"/><path d="M10 12.5 8 15l2 2.5M14 12.5 16 15l-2 2.5"/></svg>
+        HTML 页
+      </button>
+      <button type="button" class="tab" data-tab="logs" role="tab" aria-selected="false">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M4 6.5h16M4 12h11M4 17.5h14"/></svg>
+        操作日志
+      </button>
+      <button type="button" class="tab" data-tab="versions" role="tab" aria-selected="false">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M3.5 12a8.5 8.5 0 1 0 2.6-6.1"/><path d="M3.5 4.5V9H8"/><path d="M12 8v4.3l2.8 1.8"/></svg>
+        版本历史
+      </button>
+      <button type="button" class="tab" data-tab="settings" role="tab" aria-selected="false">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="3"/><path d="M12 3.2v2.1M12 18.7v2.1M4.8 12H2.7M21.3 12h-2.1M6.9 6.9 5.4 5.4M18.6 18.6l-1.5-1.5M17.1 6.9l1.5-1.5M5.4 18.6l1.5-1.5"/></svg>
+        系统设置
+      </button>
     </div>
 
     <!-- 各标签页片段由 js/admin.js 从 pages/*.html 注入 -->
@@ -44,8 +72,8 @@
 
 <!-- 设备 CSV 导出弹窗 -->
 <div id="export-csv-modal" class="modal-backdrop">
-  <div class="modal-box">
-    <h3>导出设备 CSV</h3>
+  <div class="modal-box" role="dialog" aria-modal="true" aria-labelledby="export-modal-title">
+    <h3 id="export-modal-title">导出设备 CSV</h3>
     <p class="muted">勾选要导出的列；可按最后上线时间筛选，不选则导出全部设备。</p>
     <div class="modal-row">
       <button class="mini" id="export-select-all">全选</button>

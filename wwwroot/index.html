@@ -3,11 +3,12 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="color-scheme" content="light">
   <title>管理员登录 · 校园浏览器服务端</title>
   <link rel="icon" href="favicon.ico">
   <link rel="stylesheet" href="styles.css">
 </head>
-<body>
+<body class="page-login">
 <div class="wrap">
   <header class="page-header">
     <img src="logo.png" alt="校园浏览器 logo" class="page-logo">
@@ -20,8 +21,9 @@
   <!-- 管理员登录 -->
   <section id="screen-login" class="card narrow">
     <h2>管理员登录</h2>
-    <label>账号<input id="login-username" autocomplete="username"></label>
-    <label>密码<input id="login-password" type="password" autocomplete="current-password"></label>
+    <p class="muted">使用初始化时设置的管理员账号进入控制台。</p>
+    <label>账号<input id="login-username" autocomplete="username" placeholder="admin"></label>
+    <label>密码<input id="login-password" type="password" autocomplete="current-password" placeholder="请输入登录密码"></label>
     <button id="btn-login" class="primary">登录</button>
     <p id="login-msg" class="msg"></p>
   </section>

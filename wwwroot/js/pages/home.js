@@ -97,23 +97,34 @@ function renderLineChart(d) {
     for (let i = 0; i <= 4; i++) {
       const v = Math.round(maxVal * i / 4);
       const y = yOf(v);
-      grid += `<line x1="${padL}" y1="${y.toFixed(1)}" x2="${W - padR}" y2="${y.toFixed(1)}" stroke="#eef2f7" stroke-width="1"/>`
+      grid += `<line x1="${padL}" y1="${y.toFixed(1)}" x2="${W - padR}" y2="${y.toFixed(1)}" stroke="#e8eef7" stroke-width="1"/>`
         + `<text x="${padL - 8}" y="${(y + 4).toFixed(1)}" text-anchor="end" font-size="11" fill="#94a3b8">${v}</text>`;
     }
     xAxis = '';
     for (let h = 0; h <= 24; h += 4) {
       const x = padL + (h / 24) * plotW;
-      xAxis += `<line x1="${x.toFixed(1)}" y1="${padT}" x2="${x.toFixed(1)}" y2="${padT + plotH}" stroke="#f6f8fb" stroke-width="1"/>`
+      xAxis += `<line x1="${x.toFixed(1)}" y1="${padT}" x2="${x.toFixed(1)}" y2="${padT + plotH}" stroke="#f4f7fb" stroke-width="1"/>`
         + `<text x="${x.toFixed(1)}" y="${H - 8}" text-anchor="middle" font-size="11" fill="#94a3b8">${String(h).padStart(2, '0')}:00</text>`;
     }
     state.chartStatic = { maxVal, dayStart, grid, xAxis };
   }
   const last = pts[pts.length - 1];
-  const dot = last ? `<circle cx="${xOf(last.ts).toFixed(1)}" cy="${yOf(last.v).toFixed(1)}" r="3.5" fill="#1b7ae0"/>` : '';
+  // 末端实时点：白色描边 + 实心圆点，突出"现在"的位置
+  const dot = last
+    ? `<circle cx="${xOf(last.ts).toFixed(1)}" cy="${yOf(last.v).toFixed(1)}" r="5.5" fill="#fff"/>`
+      + `<circle cx="${xOf(last.ts).toFixed(1)}" cy="${yOf(last.v).toFixed(1)}" r="3.5" fill="#1d4ed8"/>`
+    : '';
 
-  $('chart-line').innerHTML = grid + xAxis
-    + (area ? `<polygon points="${area}" fill="rgba(27,122,224,.12)"/>` : '')
-    + (pts.length > 1 ? `<polyline points="${line}" fill="none" stroke="#1b7ae0" stroke-width="2.2" stroke-linejoin="round"/>` : '')
+  $('chart-line').innerHTML =
+    '<defs><linearGradient id="lineAreaGrad" x1="0" y1="0" x2="0" y2="1">'
+    + '<stop offset="0%" stop-color="#2563eb" stop-opacity=".22"/>'
+    + '<stop offset="100%" stop-color="#2563eb" stop-opacity="0"/>'
+    + '</linearGradient></defs>'
+    + grid + xAxis
+    + (area ? `<polygon points="${area}" fill="url(#lineAreaGrad)"/>` : '')
+    + (pts.length > 1
+      ? `<polyline points="${line}" fill="none" stroke="#2563eb" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round"/>`
+      : '')
     + dot;
   $('line-empty').style.display = pts.length > 1 ? 'none' : 'block';
 }
@@ -136,11 +147,11 @@ function renderDonut(d) {
       + `L${xi1.toFixed(2)},${yi1.toFixed(2)} A${r},${r} 0 ${large} 0 ${xi0.toFixed(2)},${yi0.toFixed(2)} Z" fill="${color}"/>`;
   };
   $('chart-donut').innerHTML =
-    `<circle cx="${cx}" cy="${cy}" r="${(R + r) / 2}" fill="none" stroke="#eef2f7" stroke-width="${R - r}"/>`
-    + seg(0, ratio, '#1b7ae0')
+    `<circle cx="${cx}" cy="${cy}" r="${(R + r) / 2}" fill="none" stroke="#eef2f8" stroke-width="${R - r}"/>`
+    + seg(0, ratio, '#059669')
     + seg(ratio, 1, '#cbd5e1')
-    + `<text x="${cx}" y="${cy + 2}" text-anchor="middle" font-size="34" font-weight="700" fill="#1b7ae0">${(d.percent || 0)}%</text>`
-    + `<text x="${cx}" y="${cy + 26}" text-anchor="middle" font-size="12" fill="#94a3b8">在线占比</text>`;
+    + `<text x="${cx}" y="${cy + 2}" text-anchor="middle" font-size="34" font-weight="700" fill="#0f172a">${(d.percent || 0)}%</text>`
+    + `<text x="${cx}" y="${cy + 26}" text-anchor="middle" font-size="12" fill="#64748b">在线占比</text>`;
 }
 
 definePage('home', {

@@ -3,11 +3,12 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="color-scheme" content="light">
   <title>初始化向导 · 校园浏览器服务端</title>
   <link rel="icon" href="favicon.ico">
   <link rel="stylesheet" href="styles.css">
 </head>
-<body>
+<body class="page-setup">
 <div class="wrap">
   <header class="page-header">
     <img src="logo.png" alt="校园浏览器 logo" class="page-logo">
@@ -20,7 +21,7 @@
   <!-- 首次启动初始化向导 -->
   <section id="screen-setup">
     <div class="card">
-      <h2>管理员账号</h2>
+      <h3 class="section-title">管理员账号</h3>
       <div class="grid">
         <label>管理员账号<input id="setup-username" autocomplete="username" placeholder="admin"></label>
         <label>登录密码（至少 6 位）<input id="setup-password" type="password" autocomplete="new-password"></label>
