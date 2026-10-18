@@ -2,7 +2,7 @@
 
 **配置驱动的校园受管浏览器后端**：Web 后台图形化配置 → RSA 签名下发 → 平板强制白/黑名单 → 设备与日志可视化管控。
 
-![version](https://img.shields.io/badge/version-0.8.3-1b7ae0)
+![version](https://img.shields.io/badge/version-0.8.4-1b7ae0)
 ![platform](https://img.shields.io/badge/.NET-8.0-512bd4)
 ![license](https://img.shields.io/badge/license-GPL--3.0-12b3a8)
 
@@ -52,7 +52,7 @@ flowchart LR
 
 ## 后台界面
 
-后台是**零依赖、零构建**的原生 HTML/CSS/JS（无框架、无 CDN、无图标字体），整站样式集中在 `wwwroot/styles.css` 一个文件：
+后台是**零依赖、零构建**的原生 HTML/CSS/JS（无框架、无 CDN、无图标字体），整站样式集中在 `wwwroot/styles.css` 一个文件（v0.8.4 视觉改版）：
 
 - **设计基调**：Data-Dense Dashboard —— 蓝色数据主色（`#1e40af`，悬停 `#2563eb`）+ 琥珀色行动点（`#b45309`），4/8 间距节奏，卡片 / 表格 / 表单三级密度
 - **设计令牌**：颜色、间距、圆角、阴影、动效全部集中在 `styles.css` 的 `:root`；组件规则里不写裸 hex（图表内联 SVG 是唯一例外）
@@ -83,7 +83,7 @@ dotnet publish CampusBrowser.Server.csproj -c Release -r win-x64 \
   --self-contained true -o installer/publish/win-x64      # 约 33 MB
 
 # 2) NSIS 编译（Linux 用 -D，Windows 用 /D）
-makensis -DAPP_VERSION=0.8.3 installer/campus-browser-server.nsi   # 产物约 11 MB
+makensis -DAPP_VERSION=0.8.4 installer/campus-browser-server.nsi   # 产物约 11 MB
 ```
 
 安装器：选项页设端口/目录/开机自启/桌面快捷方式 → 注册服务 → **安装完成即启动并等待端口就绪** → 放行防火墙 → 开始菜单 `.url` 后台入口。卸载默认保留 `data\campus.db`。
